@@ -80,7 +80,7 @@ export function detectInsertionEcho(insertion, generated) {
     return head.includes(insertionNorm);
 }
 
-const META_COMMENTARY_REGEX = /\b(discarded[ _]suffix|editorial reference|original draft|as an ai\b|the user'?s? insertion|per your instructions?|rewritten continuation)\b/i;
+const META_COMMENTARY_REGEX = /\b(scene[ _]notes|discarded[ _]suffix|editorial reference|original draft|planning material|as an ai\b|the user'?s? insertion|per your instructions?|rewritten continuation)\b/i;
 
 export function detectMetaCommentary(generated) {
     return META_COMMENTARY_REGEX.test(generated);
