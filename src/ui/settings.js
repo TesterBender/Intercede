@@ -24,6 +24,11 @@ const PANEL_HTML = `
                 <input type="checkbox" id="intercede_show_button">
                 <span>Show Intercede button on the eligible message</span>
             </label>
+            <label for="intercede_interface">Selection interface</label>
+            <select id="intercede_interface" class="text_pole">
+                <option value="inline">In place, on the message (glowing markers)</option>
+                <option value="window">Floating window</option>
+            </select>
             <label for="intercede_boundaries">Selection boundaries</label>
             <select id="intercede_boundaries" class="text_pole">
                 <option value="paragraph">Paragraphs only</option>
@@ -91,6 +96,7 @@ export function initSettingsPanel() {
     bindCheckbox('intercede_confirm', 'confirmBeforeCommit');
     bindCheckbox('intercede_compare_after', 'compareAfterCommit');
     bindCheckbox('intercede_warn_extensions', 'warnExtensions');
+    bindSelect('intercede_interface', 'selectionInterface');
     bindSelect('intercede_boundaries', 'boundaries');
     bindSelect('intercede_default_mode', 'defaultMode');
 

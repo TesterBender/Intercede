@@ -10,7 +10,7 @@ import { getCommittedTipRecord, isEligibleTarget, undoIntercession } from '../tr
 import { debounce, notify } from '../utils.js';
 import { showCompare } from './compare.js';
 import { showConfirm } from './modal.js';
-import { openIntercede } from './overlay.js';
+import { openIntercede } from './open.js';
 
 const BUTTONS_HTML = `
     <div title="Intercede — respond inside this message (Alt+I)" class="mes_button mes_intercede fa-solid fa-reply interactable" tabindex="0"></div>

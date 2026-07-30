@@ -1,52 +1,18 @@
 /**
- * Intercession mode (§8): a reading overlay over the raw message with clickable
- * insertion boundaries and an inline composer. The overlay never mutates the
- * underlying chat message — all mutation happens inside the transaction after
- * an explicit commit.
+ * Floating-window selection interface (§8): a reading overlay over the raw
+ * message with clickable insertion boundaries and an inline composer. The
+ * overlay never mutates the underlying chat message — all mutation happens
+ * inside the transaction after an explicit commit.
  */
 
-import { createAnchor } from '../anchors.js';
 import { BOUNDARY_TYPES, REWRITE_MODES, REWRITE_MODE_LABELS } from '../constants.js';
-import { getBoundaries, splitAtOffset } from '../segmentation.js';
+import { getBoundaries } from '../segmentation.js';
 import { getCtx, getCurrentChatId, getSettings } from '../stcontext.js';
-import { IntercedeTransaction, isEligibleTarget } from '../transaction.js';
-import { el, notify, truncate } from '../utils.js';
-import { showCompare } from './compare.js';
-import { showConfirm } from './modal.js';
-
-/** Drafts survive a failed or cancelled intercession so the user can retry (§18). */
-const drafts = new Map();
-
-function draftKey(chatId, targetIndex) {
-    return `${chatId}::${targetIndex}`;
-}
+import { isEligibleTarget } from '../transaction.js';
+import { el, notify } from '../utils.js';
+import { confirmAndCommit, getDraft, setDraft } from './commit-flow.js';
 
 let overlayState = null;
-
-const KNOWN_MESSAGE_KEYS = new Set([
-    'name', 'is_user', 'is_system', 'is_name', 'send_date', 'mes', 'extra',
-    'swipe_id', 'swipes', 'swipe_info', 'gen_started', 'gen_finished',
-    'force_avatar', 'original_avatar', 'title', 'variables',
-]);
-
-/** Best-effort detection of another extension's continuation/branch metadata (§16.4). */
-function detectForeignContinuationData(message) {
-    const suspicious = [];
-    for (const key of Object.keys(message ?? {})) {
-        if (!KNOWN_MESSAGE_KEYS.has(key) && /continu|branch|tree/i.test(key)) suspicious.push(key);
-    }
-    for (const key of Object.keys(message?.extra ?? {})) {
-        if (/continu|branch|tree/i.test(key)) suspicious.push(`extra.${key}`);
-    }
-    return suspicious;
-}
-
-const MEMORY_EXTENSION_KEYS = ['memory', 'vectors', 'vectors_enhanced', 'smart_memory', 'qvink_memory'];
-
-function detectMemoryExtensions(ctx) {
-    const store = ctx?.extensionSettings ?? ctx?.extension_settings ?? {};
-    return MEMORY_EXTENSION_KEYS.filter(key => store[key] && typeof store[key] === 'object');
-}
 
 export function isOverlayOpen() {
     return overlayState !== null;
@@ -64,26 +30,19 @@ function saveDraftFromComposer() {
     const state = overlayState;
     const textarea = state?.composer?.querySelector('textarea');
     if (!state || !textarea) return;
-    const key = draftKey(state.chatId, state.targetIndex);
-    const text = textarea.value;
-    const mode = state.composer.querySelector('select')?.value;
-    if (text.trim()) {
-        drafts.set(key, { text, mode, boundaryIndex: state.selectedIndex });
-    } else {
-        drafts.delete(key);
-    }
+    setDraft(state.chatId, state.targetIndex, {
+        text: textarea.value,
+        mode: state.composer.querySelector('select')?.value,
+        boundaryIndex: state.selectedIndex,
+    });
 }
 
 /**
- * Open intercession mode on a message (defaults to the latest).
+ * Open the floating-window interface on a message (defaults to the latest).
  */
-export function openIntercede(index = undefined) {
+export function openOverlayMode(index = undefined) {
     const ctx = getCtx();
     const settings = getSettings(ctx);
-    if (!settings.enabled) {
-        notify('info', 'Intercede is disabled in its settings panel.');
-        return;
-    }
     const eligible = isEligibleTarget(ctx, index);
     if (!eligible.ok) {
         notify('warning', eligible.reason);
@@ -210,7 +169,7 @@ function buildOverlay({ ctx, settings, raw, boundaries, targetIndex, message }) 
     };
 
     // Restore a draft from a failed/cancelled attempt on this same message.
-    const draft = drafts.get(draftKey(chatId, targetIndex));
+    const draft = getDraft(chatId, targetIndex);
     if (draft && Number.isInteger(draft.boundaryIndex) && draft.boundaryIndex < boundaries.length) {
         selectBoundary(draft.boundaryIndex, draft);
     } else {
@@ -240,7 +199,7 @@ function selectBoundary(index, draft = null) {
         node.classList.toggle('intercede-cut', i > index);
     });
 
-    const stored = draft ?? drafts.get(draftKey(state.chatId, state.targetIndex));
+    const stored = draft ?? getDraft(state.chatId, state.targetIndex);
     const composer = buildComposer(stored);
     state.boundaryNodes[index].after(composer);
     state.composer = composer;
@@ -314,64 +273,17 @@ async function commitSelection() {
     }
     const rewriteMode = state.composer.querySelector('select').value;
     const boundary = state.boundaries[state.selectedIndex];
-    const anchor = createAnchor(state.raw, boundary.offset, boundary.type);
-    const { prefix, suffix } = splitAtOffset(state.raw, boundary.offset);
-
-    // §8.4 confirmation preview with compatibility warnings.
-    if (state.settings.confirmBeforeCommit) {
-        const ctx = getCtx();
-        const warnings = [];
-        if (state.settings.warnExtensions) {
-            const foreign = detectForeignContinuationData(state.message);
-            if (foreign.length) {
-                warnings.push(`This message carries continuation metadata from another extension (${foreign.join(', ')}). Only the visible text becomes the prefix; the full message is preserved for undo.`);
-            }
-            const memory = detectMemoryExtensions(ctx);
-            if (memory.length) {
-                warnings.push(`Memory-related extensions are active (${memory.join(', ')}). Memories already derived from this message are not automatically recalculated.`);
-            }
-        }
-
-        const preview = el('div', 'intercede-confirm');
-        const addSection = (heading, text, className) => {
-            const section = el('div', 'intercede-compare-section');
-            section.appendChild(el('div', 'intercede-compare-heading', heading));
-            section.appendChild(el('div', `intercede-compare-text ${className}`, text));
-            preview.appendChild(section);
-        };
-        addSection('Preserved (ends with)', '…' + prefix.slice(-240), 'intercede-compare-revised');
-        addSection('Your response', insertionText, 'intercede-compare-insertion');
-        addSection('Rewritten from here (originally)', truncate(suffix, 300), 'intercede-compare-original');
-        preview.appendChild(el('div', 'intercede-compare-heading', `Rewrite mode: ${REWRITE_MODE_LABELS[rewriteMode]}`));
-        for (const warning of warnings) {
-            preview.appendChild(el('div', 'intercede-confirm-warning', '⚠ ' + warning));
-        }
-
-        const confirmed = await showConfirm('Commit this intercession?', preview, {
-            confirmLabel: 'Intercede',
-            cancelLabel: 'Back',
-        });
-        if (!confirmed) return;
-    }
-
     saveDraftFromComposer();
-    const key = draftKey(state.chatId, state.targetIndex);
-    const { targetIndex, settings } = state;
-    closeOverlay();
 
-    notify('info', 'Interceding — rewriting the continuation…');
-    const transaction = new IntercedeTransaction({ targetIndex, anchor, insertionText, rewriteMode });
-    try {
-        const result = await transaction.run();
-        drafts.delete(key);
-        notify('success', 'Intercession committed. Swipe the new continuation for other adaptations; /intercede undo restores the original.');
-        for (const warning of result.warnings) {
-            notify('warning', warning, { timeOut: 8000 });
-        }
-        if (settings.compareAfterCommit) {
-            await showCompare();
-        }
-    } catch (error) {
-        notify('error', `Intercession failed and was rolled back: ${error?.message ?? error}. Your response text was kept — open Intercede again to retry.`);
-    }
+    await confirmAndCommit({
+        chatId: state.chatId,
+        targetIndex: state.targetIndex,
+        raw: state.raw,
+        boundary,
+        insertionText,
+        rewriteMode,
+        message: state.message,
+        settings: state.settings,
+        closeMode: closeOverlay,
+    });
 }

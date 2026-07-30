@@ -22,7 +22,8 @@
 
 /* ── Shared tokens ─────────────────────────────────────────────────────── */
 
-.intercede-backdrop {
+.intercede-backdrop,
+.mes.intercede-inline-active {
     /* Accent tints fall back to flat translucency, upgraded via color-mix below. */
     --ic-accent: var(--SmartThemeQuoteColor, rgb(225, 138, 36));
     --ic-accent-dim: rgba(255, 255, 255, 0.08);
@@ -31,7 +32,8 @@
 }
 
 @supports (background: color-mix(in srgb, red 10%, transparent)) {
-    .intercede-backdrop {
+    .intercede-backdrop,
+    .mes.intercede-inline-active {
         --ic-accent-dim: color-mix(in srgb, var(--ic-accent) 13%, transparent);
         --ic-accent-glow: color-mix(in srgb, var(--ic-accent) 26%, transparent);
     }
@@ -383,6 +385,112 @@
     margin-top: 4px;
 }
 
+/* ── In-place mode (markers rendered on the live message) ─────────────── */
+
+.mes.intercede-inline-active .mes_text {
+    position: relative;
+}
+
+.intercede-imarker {
+    font: inherit;
+    line-height: inherit;
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+    color: var(--ic-accent);
+}
+
+.intercede-imarker-glyph {
+    border-radius: 4px;
+    opacity: 0.35;
+    white-space: nowrap;
+    transition: opacity var(--ic-motion, 125ms) ease,
+        background-color var(--ic-motion, 125ms) ease,
+        text-shadow var(--ic-motion, 125ms) ease;
+}
+
+/* Sentence markers: zero-width anchors with a floating chip — no layout shift. */
+.intercede-imarker-sentence {
+    display: inline-block;
+    width: 0;
+    height: 0;
+    overflow: visible;
+    position: relative;
+    vertical-align: baseline;
+}
+
+.intercede-imarker-sentence .intercede-imarker-glyph {
+    position: absolute;
+    left: 0;
+    bottom: -0.55em;
+    transform: translateX(-50%);
+    padding: 0 0.3em;
+    font-size: 0.85em;
+}
+
+/* Paragraph markers: a hairline floating in the existing gap below the block. */
+.intercede-ipara-host {
+    position: relative;
+}
+
+.intercede-imarker-para {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -0.7em;
+    height: 0;
+    overflow: visible;
+    padding: 0.5em 0;
+}
+
+.intercede-imarker-para::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    border-top: 1px dashed var(--ic-accent);
+    opacity: 0.3;
+    transition: opacity var(--ic-motion, 125ms) ease, filter var(--ic-motion, 125ms) ease;
+}
+
+.intercede-imarker-para .intercede-imarker-glyph {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    padding: 0 0.4em;
+    font-size: 0.8em;
+    background-color: var(--SmartThemeBlurTintColor, rgba(23, 23, 23, 0.9));
+}
+
+.intercede-imarker:hover .intercede-imarker-glyph,
+.intercede-imarker:focus .intercede-imarker-glyph,
+.intercede-imarker-selected .intercede-imarker-glyph {
+    opacity: 1;
+    background-color: var(--ic-accent-dim);
+    text-shadow: 0 0 8px var(--ic-accent);
+}
+
+.intercede-imarker-para:hover::before,
+.intercede-imarker-para:focus::before,
+.intercede-imarker-selected.intercede-imarker-para::before {
+    opacity: 0.9;
+    filter: drop-shadow(0 0 4px var(--ic-accent));
+}
+
+/* Dimmed "will be rewritten" region after a point is chosen. */
+.intercede-idim {
+    opacity: 0.38;
+    transition: opacity var(--ic-motion, 125ms) ease;
+}
+
+.intercede-composer-inline {
+    white-space: normal;
+}
+
 /* ── Small screens ─────────────────────────────────────────────────────── */
 
 @media (max-width: 600px) {
@@ -412,5 +520,14 @@
     .intercede-mode-select {
         flex-basis: 100%;
         max-width: none;
+    }
+
+    .intercede-imarker-sentence .intercede-imarker-glyph {
+        padding: 0 0.5em;
+        font-size: 1em;
+    }
+
+    .intercede-imarker-para {
+        padding: 0.7em 0;
     }
 }

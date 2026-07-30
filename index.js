@@ -21,12 +21,12 @@ import {
 import { checkRecovery, undoIntercession } from './src/transaction.js';
 import { showCompare } from './src/ui/compare.js';
 import { initMessageButtons, refreshButtonVisibilityDebounced } from './src/ui/message-button.js';
-import { closeOverlay, openIntercede } from './src/ui/overlay.js';
+import { closeAllModes, openIntercede } from './src/ui/open.js';
 import { initSettingsPanel } from './src/ui/settings.js';
 import { notify, waitUntil } from './src/utils.js';
 import { cleanupVault, vaultKeys } from './src/vault.js';
 
-const VERSION = '0.3.0';
+const VERSION = '0.4.0';
 
 async function handleSlashCommand(action) {
     switch (String(action ?? '').trim().toLowerCase()) {
@@ -121,9 +121,15 @@ async function init() {
     const eventTypes = getEventTypes();
     if (eventTypes.CHAT_CHANGED) {
         eventSource?.on(eventTypes.CHAT_CHANGED, async () => {
-            closeOverlay();
+            closeAllModes();
             refreshButtonVisibilityDebounced();
             await checkRecovery();
+        });
+    }
+    if (eventTypes.GENERATION_STARTED) {
+        // A generation moves the chat on — restore any open selection mode first.
+        eventSource?.on(eventTypes.GENERATION_STARTED, (_type, _params, dryRun) => {
+            if (!dryRun) closeAllModes();
         });
     }
     if (eventTypes.APP_READY) {

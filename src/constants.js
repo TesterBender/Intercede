@@ -71,6 +71,8 @@ export const BOUNDARY_TYPES = Object.freeze({
 
 export const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
+    /** 'inline' = markers rendered on the live message; 'window' = floating reading overlay. */
+    selectionInterface: 'inline',
     /** 'paragraph' = paragraph boundaries only; 'sentence' = paragraphs and sentences. */
     boundaries: 'sentence',
     defaultMode: REWRITE_MODES.ADAPTIVE,
