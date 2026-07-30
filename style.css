@@ -1,0 +1,278 @@
+/* ── Intercede ─────────────────────────────────────────────────────────── */
+
+/* Message-action buttons: hidden unless the message is eligible. */
+.mes_intercede,
+.mes_intercede_undo,
+.mes_intercede_compare {
+    display: none;
+}
+
+.mes.intercede-eligible .mes_intercede {
+    display: inline-block;
+}
+
+.mes.intercede-committed .mes_intercede_undo,
+.mes.intercede-committed .mes_intercede_compare {
+    display: inline-block;
+}
+
+/* ── Overlay / modal shells ────────────────────────────────────────────── */
+
+.intercede-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 4900;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px;
+}
+
+.intercede-modal-backdrop {
+    z-index: 4950;
+}
+
+.intercede-panel {
+    display: flex;
+    flex-direction: column;
+    width: min(900px, 96vw);
+    max-height: 92vh;
+    background: var(--SmartThemeBlurTintColor, rgb(30, 30, 38));
+    color: var(--SmartThemeBodyColor, #e8e8e8);
+    border: 1px solid var(--SmartThemeBorderColor, #555);
+    border-radius: 10px;
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.55);
+}
+
+.intercede-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, #555);
+}
+
+.intercede-title-name {
+    font-weight: bold;
+}
+
+.intercede-title-hint {
+    opacity: 0.7;
+    font-size: 0.9em;
+}
+
+.intercede-close {
+    min-width: 2em;
+}
+
+.intercede-body {
+    overflow-y: auto;
+    padding: 14px 18px;
+}
+
+.intercede-footer {
+    padding: 8px 14px;
+    border-top: 1px solid var(--SmartThemeBorderColor, #555);
+    opacity: 0.6;
+    font-size: 0.85em;
+}
+
+/* ── Reading area ──────────────────────────────────────────────────────── */
+
+.intercede-reader {
+    white-space: pre-wrap;
+    line-height: 1.55;
+    word-break: break-word;
+}
+
+.intercede-slice-block {
+    display: block;
+    margin-top: 0.8em;
+}
+
+.intercede-slice.intercede-cut {
+    opacity: 0.45;
+}
+
+.intercede-boundary {
+    background: transparent;
+    color: var(--SmartThemeQuoteColor, #7aa2f7);
+    border: 1px dashed transparent;
+    cursor: pointer;
+    border-radius: 6px;
+    font: inherit;
+    line-height: inherit;
+}
+
+.intercede-boundary-sentence {
+    display: inline;
+    padding: 0 0.35em;
+    margin: 0 0.15em;
+    opacity: 0.55;
+}
+
+.intercede-boundary-paragraph {
+    display: block;
+    width: 100%;
+    text-align: left;
+    margin: 0.5em 0;
+    padding: 0.15em 0.5em;
+    opacity: 0.7;
+    border-color: var(--SmartThemeQuoteColor, #7aa2f7);
+}
+
+.intercede-boundary:hover,
+.intercede-boundary:focus {
+    opacity: 1;
+    background: rgba(122, 162, 247, 0.12);
+    outline: none;
+    border-color: var(--SmartThemeQuoteColor, #7aa2f7);
+}
+
+.intercede-boundary-selected {
+    opacity: 1;
+    background: rgba(122, 162, 247, 0.2);
+}
+
+.intercede-boundary-label {
+    pointer-events: none;
+}
+
+/* ── Inline composer ───────────────────────────────────────────────────── */
+
+.intercede-composer {
+    display: block;
+    margin: 0.6em 0;
+    padding: 0.7em;
+    border: 1px solid var(--SmartThemeQuoteColor, #7aa2f7);
+    border-radius: 8px;
+    background: rgba(122, 162, 247, 0.07);
+    white-space: normal;
+}
+
+.intercede-composer-text {
+    width: 100%;
+    resize: vertical;
+    min-height: 70px;
+    box-sizing: border-box;
+}
+
+.intercede-composer-controls {
+    display: flex;
+    gap: 8px;
+    margin-top: 6px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.intercede-mode-select {
+    flex: 1 1 180px;
+    max-width: 240px;
+}
+
+.intercede-composer-hint {
+    margin-top: 6px;
+    opacity: 0.6;
+    font-size: 0.85em;
+}
+
+.intercede-primary {
+    font-weight: bold;
+}
+
+/* ── Modal dialogs ─────────────────────────────────────────────────────── */
+
+.intercede-modal {
+    width: min(700px, 94vw);
+}
+
+.intercede-modal-title {
+    font-weight: bold;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, #555);
+}
+
+.intercede-modal-body {
+    padding: 12px 14px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+}
+
+.intercede-modal-buttons {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    padding: 10px 14px;
+    border-top: 1px solid var(--SmartThemeBorderColor, #555);
+}
+
+/* ── Comparison / confirmation views ───────────────────────────────────── */
+
+.intercede-compare-meter {
+    margin-bottom: 0.6em;
+    opacity: 0.8;
+    font-size: 0.9em;
+}
+
+.intercede-compare-section {
+    margin-bottom: 0.8em;
+}
+
+.intercede-compare-heading {
+    font-weight: bold;
+    opacity: 0.8;
+    margin-bottom: 0.25em;
+}
+
+.intercede-compare-text {
+    white-space: pre-wrap;
+    border: 1px solid var(--SmartThemeBorderColor, #555);
+    border-radius: 6px;
+    padding: 0.5em 0.7em;
+    max-height: 30vh;
+    overflow-y: auto;
+    word-break: break-word;
+}
+
+.intercede-compare-original {
+    opacity: 0.75;
+    border-style: dashed;
+}
+
+.intercede-compare-insertion {
+    border-color: var(--SmartThemeQuoteColor, #7aa2f7);
+}
+
+.intercede-confirm-warning {
+    color: #e0af68;
+    margin-top: 0.4em;
+}
+
+/* ── Settings panel ────────────────────────────────────────────────────── */
+
+.intercede-settings .inline-drawer-content {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.intercede-settings-note {
+    opacity: 0.65;
+}
+
+.intercede-settings-actions {
+    margin-top: 4px;
+}
+
+/* ── Small screens ─────────────────────────────────────────────────────── */
+
+@media (max-width: 600px) {
+    .intercede-panel {
+        width: 100vw;
+        height: 100dvh;
+        max-height: 100dvh;
+        border-radius: 0;
+    }
+}
