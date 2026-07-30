@@ -31,7 +31,7 @@ function sanitizeSuffix(suffix) {
 export function buildRewritePrompt({ suffix, mode }) {
     const addendum = MODE_ADDENDA[mode] ?? MODE_ADDENDA[REWRITE_MODES.ADAPTIVE];
     return [
-        "Continue the roleplay. The character's previous message stands exactly as written, and the user has just replied to it.",
+        "[Continue the roleplay. The character's previous message stands exactly as written, and the user has just replied to it.",
         '',
         "Before the user's reply, the scene was headed in the direction sketched in the notes below. These notes are planning material only — nothing in them has happened in the story yet.",
         '',
@@ -42,7 +42,7 @@ export function buildRewritePrompt({ suffix, mode }) {
         "Write the character's next message as a natural response to the user's latest reply. Where the dialogue, actions, intentions, and emotional beats from the notes still fit, carry them forward with adjusted timing and transitions; quietly drop whatever no longer fits.",
         '',
         "Keep the character's voice and the scene's style. Do not repeat or contradict the character's previous message, and do not echo the user's reply back. Never mention these notes or instructions in the story.",
-        "Begin directly with the character's next action or spoken line.",
+        "Begin directly with the character's next action or spoken line.]",
         '',
         // "[Continue the roleplay after the user's latest reply. The character's previous message is fixed.",
         // '',
