@@ -26,7 +26,7 @@ import { initSettingsPanel } from './src/ui/settings.js';
 import { notify, waitUntil } from './src/utils.js';
 import { cleanupVault, vaultKeys } from './src/vault.js';
 
-const VERSION = '0.4.1';
+const VERSION = '0.4.2';
 
 async function handleSlashCommand(action) {
     switch (String(action ?? '').trim().toLowerCase()) {
