@@ -24,7 +24,7 @@ export function getDraft(chatId, targetIndex) {
     return drafts.get(draftKey(chatId, targetIndex)) ?? null;
 }
 
-/** @param {{ text: string, mode?: string, boundaryIndex?: number } | null} draft */
+/** @param {{ text: string, mode?: string, boundaryOffset?: number | null } | null} draft */
 export function setDraft(chatId, targetIndex, draft) {
     const key = draftKey(chatId, targetIndex);
     if (draft?.text?.trim()) {
@@ -32,6 +32,17 @@ export function setDraft(chatId, targetIndex, draft) {
     } else {
         drafts.delete(key);
     }
+}
+
+/**
+ * Resolve a stored draft's boundary back to an index in the caller's boundary
+ * list. Drafts store the raw-text offset — stable across the two interfaces,
+ * which may filter their boundary lists differently — never a positional index.
+ */
+export function findDraftBoundaryIndex(draft, boundaries) {
+    if (!draft || !Number.isFinite(draft.boundaryOffset)) return null;
+    const index = boundaries.findIndex(boundary => boundary.offset === draft.boundaryOffset);
+    return index === -1 ? null : index;
 }
 
 const KNOWN_MESSAGE_KEYS = new Set([

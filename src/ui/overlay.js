@@ -10,7 +10,8 @@ import { getBoundaries } from '../segmentation.js';
 import { getCtx, getCurrentChatId, getSettings } from '../stcontext.js';
 import { isEligibleTarget } from '../transaction.js';
 import { el, notify } from '../utils.js';
-import { confirmAndCommit, getDraft, setDraft } from './commit-flow.js';
+import { confirmAndCommit, findDraftBoundaryIndex, getDraft, setDraft } from './commit-flow.js';
+import { classifyBoundaries, renderInstrumented } from './visibility.js';
 
 let overlayState = null;
 
@@ -33,7 +34,7 @@ function saveDraftFromComposer() {
     setDraft(state.chatId, state.targetIndex, {
         text: textarea.value,
         mode: state.composer.querySelector('select')?.value,
-        boundaryIndex: state.selectedIndex,
+        boundaryOffset: state.selectedIndex === null ? null : state.boundaries[state.selectedIndex]?.offset,
     });
 }
 
@@ -49,9 +50,21 @@ export function openOverlayMode(index = undefined) {
         return;
     }
     const raw = String(eligible.message.mes ?? '');
-    const boundaries = getBoundaries(raw, settings.boundaries);
+    let boundaries = getBoundaries(raw, settings.boundaries);
     if (!boundaries.length) {
         notify('warning', 'No safe insertion points were found in this message.');
+        return;
+    }
+    // Display-only transforms (regex scripts, macros) can hide regions of the
+    // raw text; a cut inside an invisible region would split the hidden block,
+    // so those boundaries are never offered.
+    const container = renderInstrumented(raw, boundaries, eligible.message, eligible.targetIndex);
+    if (container) {
+        const statuses = classifyBoundaries(raw, boundaries, container);
+        boundaries = boundaries.filter((_, i) => statuses[i] !== 'hidden');
+    }
+    if (!boundaries.length) {
+        notify('warning', 'No insertion points found in the visible text of this message.');
         return;
     }
     closeOverlay();
@@ -170,8 +183,9 @@ function buildOverlay({ ctx, settings, raw, boundaries, targetIndex, message }) 
 
     // Restore a draft from a failed/cancelled attempt on this same message.
     const draft = getDraft(chatId, targetIndex);
-    if (draft && Number.isInteger(draft.boundaryIndex) && draft.boundaryIndex < boundaries.length) {
-        selectBoundary(draft.boundaryIndex, draft);
+    const draftIndex = findDraftBoundaryIndex(draft, boundaries);
+    if (draftIndex !== null) {
+        selectBoundary(draftIndex, draft);
     } else {
         boundaryNodes[0]?.focus();
     }

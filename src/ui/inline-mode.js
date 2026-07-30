@@ -12,9 +12,12 @@
  * Unicode sentinels are inserted at raw-text boundary offsets, the copy is
  * rendered through SillyTavern's own messageFormatting pipeline, and the
  * surviving sentinels are swapped for interactive markers. The chat data is
- * never touched; exit re-renders natively via updateMessageBlock. If the
- * formatting pipeline destroys too many sentinels (aggressive regex scripts),
- * the caller falls back to the floating window.
+ * never touched; exit re-renders natively via updateMessageBlock.
+ *
+ * Boundaries whose text is display-hidden (e.g. a regex script that strips
+ * the model's <response_consideration> planning block at render time) are
+ * classified and dropped, not counted as failures — the floating-window
+ * fallback fires only when sentinels die inside text the reader can see.
  */
 
 import { BOUNDARY_TYPES, REWRITE_MODES, REWRITE_MODE_LABELS } from '../constants.js';
@@ -22,26 +25,17 @@ import { getBoundaries } from '../segmentation.js';
 import { getCtx, getCurrentChatId, getSettings } from '../stcontext.js';
 import { isEligibleTarget } from '../transaction.js';
 import { el, notify } from '../utils.js';
-import { confirmAndCommit, getDraft, setDraft } from './commit-flow.js';
+import { confirmAndCommit, findDraftBoundaryIndex, getDraft, setDraft } from './commit-flow.js';
+import { classifyBoundaries, renderInstrumented, SENTINEL_REGEX } from './visibility.js';
 
-const S_START = String.fromCharCode(0xE000);
-const S_END = String.fromCharCode(0xE001);
-const SENTINEL_REGEX = new RegExp(S_START + '(\\d+)' + S_END);
+export { instrumentRaw } from './visibility.js';
+
+const MARKER_GLYPH = '⤷';
 
 let inlineState = null;
 
 export function isInlineModeOpen() {
     return inlineState !== null;
-}
-
-/** Insert sentinel tokens at boundary offsets (pure; exported for tests). */
-export function instrumentRaw(raw, boundaries) {
-    let out = raw;
-    for (let i = boundaries.length - 1; i >= 0; i--) {
-        const offset = boundaries[i].offset;
-        out = out.slice(0, offset) + S_START + i + S_END + out.slice(offset);
-    }
-    return out;
 }
 
 /**
@@ -59,7 +53,7 @@ export function openInlineMode(index = undefined) {
     const targetIndex = eligible.targetIndex;
     const mesNode = document.querySelector(`#chat .mes[mesid="${targetIndex}"]`);
     const mesTextNode = mesNode?.querySelector('.mes_text');
-    if (!mesNode || !mesTextNode || typeof ctx.messageFormatting !== 'function') {
+    if (!mesNode || !mesTextNode) {
         return 'fallback';
     }
 
@@ -70,22 +64,10 @@ export function openInlineMode(index = undefined) {
         return 'ok';
     }
 
-    let rendered;
-    try {
-        rendered = ctx.messageFormatting(
-            instrumentRaw(raw, boundaries),
-            eligible.message.name,
-            Boolean(eligible.message.is_system),
-            Boolean(eligible.message.is_user),
-            targetIndex,
-        );
-    } catch (error) {
-        console.warn('[Intercede] messageFormatting failed for in-place mode', error);
-        return 'fallback';
-    }
-
-    const container = document.createElement('div');
-    container.innerHTML = rendered; // messageFormatting output is already sanitized by ST
+    const container = renderInstrumented(raw, boundaries, eligible.message, targetIndex);
+    if (!container) return 'fallback';
+    // Which boundaries live in text the reader can actually see? (§9.5)
+    const statuses = classifyBoundaries(raw, boundaries, container);
 
     closeInlineMode();
     inlineState = {
@@ -106,10 +88,20 @@ export function openInlineMode(index = undefined) {
     };
 
     placeMarkers(container, boundaries);
-    if (inlineState.markers.size < Math.max(1, Math.ceil(boundaries.length / 2))) {
-        // The formatting pipeline ate the sentinels — this message can't host markers.
+    removeGhostMarkers(container, statuses);
+
+    const survivors = inlineState.markers.size;
+    const failedCount = statuses.filter(status => status === 'failed').length;
+    if (failedCount > survivors) {
+        // Sentinels died inside VISIBLE text — the pipeline mangles them and
+        // marker positions cannot be trusted for this message.
         inlineState = null;
         return 'fallback';
+    }
+    if (survivors === 0) {
+        inlineState = null;
+        notify('warning', 'No insertion points found in the visible text of this message.');
+        return 'ok';
     }
 
     // Swap the rendered content in (moving nodes keeps marker listeners alive).
@@ -144,8 +136,9 @@ export function openInlineMode(index = undefined) {
 
     // Restore a draft from a failed/cancelled attempt on this same message.
     const draft = getDraft(inlineState.chatId, targetIndex);
-    if (draft && Number.isInteger(draft.boundaryIndex) && inlineState.markers.has(draft.boundaryIndex)) {
-        selectInlineBoundary(draft.boundaryIndex, draft);
+    const draftIndex = findDraftBoundaryIndex(draft, boundaries);
+    if (draftIndex !== null && inlineState.markers.has(draftIndex)) {
+        selectInlineBoundary(draftIndex, draft);
     }
     return 'ok';
 }
@@ -178,7 +171,7 @@ function saveDraftFromComposer() {
     setDraft(state.chatId, state.targetIndex, {
         text: textarea.value,
         mode: state.composer.querySelector('select')?.value,
-        boundaryIndex: state.selectedIndex,
+        boundaryOffset: state.selectedIndex === null ? null : state.boundaries[state.selectedIndex]?.offset,
     });
 }
 
@@ -222,7 +215,7 @@ function placeMarkers(container, boundaries) {
             marker.type = 'button';
             marker.dataset.index = String(index);
             marker.title = 'Respond here';
-            marker.appendChild(el('span', 'intercede-imarker-glyph', '⤷'));
+            marker.appendChild(el('span', 'intercede-imarker-glyph', MARKER_GLYPH));
             marker.addEventListener('click', (event) => {
                 event.stopPropagation();
                 selectInlineBoundary(index);
@@ -241,6 +234,30 @@ function placeMarkers(container, boundaries) {
             inlineState.markers.set(index, marker);
             node = after;
         }
+    }
+}
+
+/**
+ * A sentinel that formed its own block — typically at the edge of a
+ * display-hidden region — leaves an empty paragraph behind once swapped for a
+ * marker. Native rendering has no such block, so keeping it would shift the
+ * layout: drop the marker and its host block, and reclassify the boundary as
+ * hidden so it doesn't count toward the fallback decision.
+ */
+function removeGhostMarkers(container, statuses) {
+    for (const [index, marker] of [...inlineState.markers]) {
+        // The container is still detached here — membership, not isConnected.
+        if (!container.contains(marker)) {
+            inlineState.markers.delete(index);
+            statuses[index] = 'hidden';
+            continue;
+        }
+        const host = marker.dataset.hosted ? marker.parentElement : hostBlockOf(marker, container);
+        if (!host || host === container) continue;
+        if (host.textContent.split(MARKER_GLYPH).join('').trim()) continue;
+        inlineState.markers.delete(index);
+        statuses[index] = 'hidden';
+        host.remove();
     }
 }
 

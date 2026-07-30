@@ -74,6 +74,11 @@ Interceding mutates canonical history, so every operation runs as a transaction:
 - **Recovery journal** — a synchronous localStorage journal is written around every risky
   step. After a reload or crash, Intercede offers to restore the original message; it never
   deletes a message it cannot prove belongs to the interrupted transaction.
+- **Display-hidden text is respected** — regex scripts set to *Alter Chat Display* can hide
+  parts of the raw message (e.g. stripping a model's `<response_consideration>` planning
+  block at render time). Intercede classifies every candidate cut against an offscreen
+  render of the message and never offers a cut inside text the reader cannot see — in
+  either interface — since cutting there would split the hidden block across messages.
 - **Latest message only** — older history is never silently rewritten. (Branch-based
   historical intercession is future scope.)
 
@@ -107,7 +112,11 @@ src/validator.js             structural validation + quality heuristics + overla
 src/transaction.js           the atomic transaction: snapshot → mutate → generate →
                              validate → commit / rollback; undo; journal recovery
 src/events.js                custom Intercede events
-src/ui/overlay.js            reading overlay, boundary markers, inline composer
+src/ui/open.js               interface dispatcher (in-place vs floating window, toggle)
+src/ui/inline-mode.js        in-place selection: markers rendered over the live message
+src/ui/overlay.js            floating window: reading overlay, boundary chips, composer
+src/ui/visibility.js         boundary visibility vs display-only transforms (§9.5)
+src/ui/commit-flow.js        shared drafts, warnings, confirmation, commit pipeline
 src/ui/message-button.js     per-message actions, eligibility, Alt+I
 src/ui/modal.js              self-contained confirm/modal dialogs
 src/ui/compare.js            original vs. revised comparison view
