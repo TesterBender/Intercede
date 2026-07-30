@@ -8,7 +8,7 @@ import { createAnchor } from '../anchors.js';
 import { REWRITE_MODE_LABELS } from '../constants.js';
 import { splitAtOffset } from '../segmentation.js';
 import { getCtx } from '../stcontext.js';
-import { IntercedeTransaction } from '../transaction.js';
+import { getChainPosition, IntercedeTransaction } from '../transaction.js';
 import { el, notify, truncate } from '../utils.js';
 import { showCompare } from './compare.js';
 import { showConfirm } from './modal.js';
@@ -105,6 +105,11 @@ export async function confirmAndCommit({ chatId, targetIndex, raw, boundary, ins
         addSection('Your response', insertionText, 'intercede-compare-insertion');
         addSection('Rewritten from here (originally)', truncate(suffix, 300), 'intercede-compare-original');
         preview.appendChild(el('div', 'intercede-compare-heading', `Rewrite mode: ${REWRITE_MODE_LABELS[rewriteMode]}`));
+        const chain = getChainPosition(ctx, targetIndex);
+        if (chain.depth) {
+            preview.appendChild(el('div', 'intercede-compare-heading',
+                `Chained: intercession ${chain.depth + 1} inside this exchange. Undo unwinds newest first.`));
+        }
         for (const warning of warnings) {
             preview.appendChild(el('div', 'intercede-confirm-warning', '⚠ ' + warning));
         }
@@ -123,7 +128,7 @@ export async function confirmAndCommit({ chatId, targetIndex, raw, boundary, ins
     try {
         const result = await transaction.run();
         drafts.delete(draftKey(chatId, targetIndex));
-        notify('success', 'Intercession committed. Swipe the new continuation for other adaptations; /intercede undo restores the original.');
+        notify('success', 'Intercession committed. Swipe the new continuation for other adaptations, intercede it again to answer inside it, or /intercede undo to restore.');
         for (const warning of result.warnings) {
             notify('warning', warning, { timeOut: 8000 });
         }

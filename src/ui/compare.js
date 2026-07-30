@@ -3,7 +3,7 @@
  */
 
 import { getCtx } from '../stcontext.js';
-import { getCommittedTipRecord } from '../transaction.js';
+import { getChainAncestry, getCommittedTipRecord } from '../transaction.js';
 import { el, notify } from '../utils.js';
 import { computePreservation } from '../validator.js';
 import { vaultGet } from '../vault.js';
@@ -30,6 +30,14 @@ export async function showCompare() {
     const preservation = computePreservation(original, revised);
 
     const content = el('div', 'intercede-compare');
+
+    // In a chain the "original continuation" below is the previous
+    // intercession's revised continuation, not the character's first draft.
+    const ancestry = getChainAncestry(ctx, record.transactionId);
+    if (ancestry.length) {
+        content.appendChild(el('div', 'intercede-compare-meter',
+            `Intercession ${ancestry.length + 1} in a chain — the continuation shown below as "original" is what intercession ${ancestry.length} produced.`));
+    }
 
     const meter = el('div', 'intercede-compare-meter',
         `Textual overlap with the original continuation: ~${preservation}% (an overlap indicator, not a quality score)`);

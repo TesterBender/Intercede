@@ -18,6 +18,10 @@ non-canonical scene notes (`<scene_notes>`), so compatible dialogue, beats, and
 revelations survive — retimed and rephrased around your response. It is also kept in a local
 vault so undo restores the original message *exactly*: text, swipes, and metadata.
 
+The revised continuation is an ordinary assistant message, so it can be interceded in turn:
+answer inside it, and the remainder of *that* is regenerated the same way. Intercessions
+chain as deep as the scene warrants, and undo unwinds them newest-first.
+
 Requires **SillyTavern 1.18.0+**. Works with streaming disabled or enabled; no server plugin,
 no external services, nothing leaves your browser.
 
@@ -44,6 +48,10 @@ SillyTavern/public/scripts/extensions/third-party/Intercede
    - ⟲ **Undo** — restore the original message exactly (available while the intercession is
      still the chat tail).
    - ⇄ **Compare** — original vs. revised continuation, with a textual-overlap indicator.
+5. To answer inside the revised continuation as well, just intercede it: it is the latest
+   completed assistant message, so ↩ / Alt+I / `/intercede` target it like any other. Each
+   link records its parent, so Compare tells you which continuation it is measured against
+   and `/intercede undo` peels the chain back one intercession at a time.
 
 ### Slash commands
 
@@ -81,17 +89,24 @@ Interceding mutates canonical history, so every operation runs as a transaction:
   either interface — since cutting there would split the hidden block across messages.
 - **Latest message only** — older history is never silently rewritten. (Branch-based
   historical intercession is future scope.)
+- **Chains keep their provenance** — when the cut message is itself a revised continuation,
+  the new transaction records its parent and its depth, and the message keeps the earlier
+  transaction's marker alongside the new one. Nothing is shared between links: each has its
+  own snapshot and its own vault entry, so undoing one restores exactly the message the next
+  one was cut from and leaves every earlier link undoable.
 
 Custom events (`intercede_before_commit`, `intercede_committed`, `intercede_rolled_back`,
 `intercede_undone`, `intercede_invalidated`) are emitted through the SillyTavern
 `eventSource` so memory/summary/timeline extensions can invalidate derived state. A small
 console API is exposed at `window.Intercede`.
 
-## Limitations (v0.2)
+## Limitations (v0.5)
 
-- Latest completed assistant message only; one intercession at a time.
+- Latest completed assistant message only; one intercession runs at a time (chains are
+  sequential — you intercede the finished continuation, not a generation in flight).
 - Group chats are not yet supported (planned for a later version with speaker forcing).
-- Undo is available only while the intercession is still the chat tail.
+- Undo is available only while the intercession is still the chat tail, so a chain unwinds
+  newest-first; an earlier link cannot be undone without undoing the ones above it.
 - Undo snapshots are stored in this browser's storage and do not travel with exported chats
   (deliberate: no invisible chat-file inflation).
 - No cutting inside code fences, inline code, links, HTML tags, macros, or unfinished quotes

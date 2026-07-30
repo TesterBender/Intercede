@@ -34,7 +34,15 @@ export function refreshButtonVisibility() {
 
     const eligible = isEligibleTarget(ctx);
     if (eligible.ok) {
-        document.querySelector(`#chat .mes[mesid="${eligible.targetIndex}"]`)?.classList.add('intercede-eligible');
+        const node = document.querySelector(`#chat .mes[mesid="${eligible.targetIndex}"]`);
+        node?.classList.add('intercede-eligible');
+        // Interceding a revised continuation extends the chain that produced it.
+        const button = node?.querySelector('.mes_intercede');
+        if (button) {
+            button.title = eligible.chain?.depth
+                ? 'Intercede again — respond inside this revised continuation (Alt+I)'
+                : 'Intercede — respond inside this message (Alt+I)';
+        }
     }
     const record = getCommittedTipRecord(ctx);
     if (record && Array.isArray(ctx?.chat)) {
@@ -45,9 +53,14 @@ export function refreshButtonVisibility() {
 export const refreshButtonVisibilityDebounced = debounce(refreshButtonVisibility, 250);
 
 async function onUndoClick() {
+    // In a chain the message that gets restored is the previous intercession's
+    // continuation, not the character's untouched original — say which.
+    const chained = Boolean(getCommittedTipRecord()?.chainDepth);
     const confirmed = await showConfirm(
         'Undo intercession?',
-        'The original assistant message (text, swipes, and metadata) will be restored exactly, and your inserted response and the revised continuation will be removed.',
+        chained
+            ? 'The continuation this intercession was cut from (text, swipes, and metadata) will be restored exactly, and your inserted response and the revised continuation will be removed. The earlier intercession stays and can be undone next.'
+            : 'The original assistant message (text, swipes, and metadata) will be restored exactly, and your inserted response and the revised continuation will be removed.',
         { confirmLabel: 'Undo', cancelLabel: 'Keep' },
     );
     if (!confirmed) return;

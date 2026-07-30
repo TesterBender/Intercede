@@ -66,10 +66,62 @@ export function getMetaContainer(ctx = getCtx()) {
     return meta[METADATA_KEY];
 }
 
+/** The Intercede marker a message carries, or null. */
+function readMarker(message) {
+    const marker = message?.extra?.[METADATA_KEY];
+    return (marker && typeof marker === 'object' && marker.transactionId) ? marker : null;
+}
+
+/** Read the transaction table without materializing the container. */
+function readTransactions(ctx) {
+    return getChatMetadata(ctx)?.[METADATA_KEY]?.transactions ?? null;
+}
+
+/**
+ * §12.9 — where a prospective target sits in an intercession chain.
+ *
+ * Interceding the revised continuation of an earlier intercession is a normal
+ * operation: the continuation is an ordinary assistant message that happens to
+ * carry a `suffix` marker, and cutting it starts a new transaction whose prefix
+ * is that continuation. `depth` counts how many intercessions deep the new one
+ * would be (0 = interceding a message no intercession produced).
+ *
+ * @returns {{ parentTransactionId: string | null, depth: number }}
+ */
+export function getChainPosition(ctx = getCtx(), index = undefined) {
+    const chat = ctx?.chat;
+    if (!Array.isArray(chat) || !chat.length) return { parentTransactionId: null, depth: 0 };
+    const targetIndex = index ?? chat.length - 1;
+    const marker = readMarker(chat[targetIndex]);
+    if (!marker || marker.role !== 'suffix') return { parentTransactionId: null, depth: 0 };
+    const record = readTransactions(ctx)?.[marker.transactionId];
+    if (!record || record.state !== 'committed') return { parentTransactionId: null, depth: 0 };
+    return { parentTransactionId: marker.transactionId, depth: (record.chainDepth ?? 0) + 1 };
+}
+
+/**
+ * The committed records a transaction is built on, oldest first — the chain
+ * that produced the message it cut. Walks the `parentTransactionId` links and
+ * stops on a missing or repeated link rather than looping.
+ */
+export function getChainAncestry(ctx = getCtx(), transactionId) {
+    const transactions = readTransactions(ctx);
+    const ancestry = [];
+    const seen = new Set();
+    let id = transactions?.[transactionId]?.parentTransactionId ?? null;
+    while (id && transactions?.[id] && !seen.has(id)) {
+        seen.add(id);
+        ancestry.unshift({ transactionId: id, ...transactions[id] });
+        id = transactions[id].parentTransactionId ?? null;
+    }
+    return ancestry;
+}
+
 /**
  * Version-one eligibility: the latest, completed, non-system assistant message
- * in a non-group chat, while nothing is generating.
- * @returns {{ ok: boolean, reason?: string, targetIndex?: number, message?: object }}
+ * in a non-group chat, while nothing is generating. A revised continuation left
+ * by an earlier intercession qualifies like any other assistant message.
+ * @returns {{ ok: boolean, reason?: string, targetIndex?: number, message?: object, chain?: { parentTransactionId: string | null, depth: number } }}
  */
 export function isEligibleTarget(ctx = getCtx(), index = undefined) {
     if (!ctx || !Array.isArray(ctx.chat) || ctx.chat.length === 0) {
@@ -87,7 +139,7 @@ export function isEligibleTarget(ctx = getCtx(), index = undefined) {
     if (!String(message.mes ?? '').trim()) return { ok: false, reason: 'The message is empty.' };
     if (isGenerationActive()) return { ok: false, reason: 'Wait for the current generation to finish.' };
     if (activeTransaction) return { ok: false, reason: 'Another intercession is already in progress.' };
-    return { ok: true, targetIndex, message };
+    return { ok: true, targetIndex, message, chain: getChainPosition(ctx, targetIndex) };
 }
 
 function removeMessageNode(index) {
@@ -147,6 +199,8 @@ export class IntercedeTransaction {
         this.suffix = null;
         this.snapshotMessage = null;
         this.vaultKey = null;
+        /** Filled in by preflight; non-zero when the target is itself a revised continuation. */
+        this.chain = { parentTransactionId: null, depth: 0 };
         this.result = { warnings: [], preservation: null };
         this._rollingBack = false;
     }
@@ -197,6 +251,7 @@ export class IntercedeTransaction {
         }
         this.chatId = getCurrentChatId(ctx);
         if (this.chatId === null || this.chatId === undefined) throw new Error('No active chat.');
+        this.chain = getChainPosition(ctx, this.targetIndex);
 
         const raw = String(ctx.chat[this.targetIndex].mes ?? '');
         const resolved = resolveAnchor(raw, this.anchor);
@@ -239,6 +294,8 @@ export class IntercedeTransaction {
             insertion: this.insertion,
             rewriteMode: this.rewriteMode,
             anchor: this.anchor,
+            parentTransactionId: this.chain.parentTransactionId,
+            chainDepth: this.chain.depth,
             createdAt: Date.now(),
         });
 
@@ -254,7 +311,19 @@ export class IntercedeTransaction {
         if (Array.isArray(message.swipes) && Number.isInteger(message.swipe_id) && message.swipes[message.swipe_id] !== undefined) {
             message.swipes[message.swipe_id] = this.prefix;
         }
-        message.extra = { ...(message.extra ?? {}), [METADATA_KEY]: { transactionId: this.transactionId, role: 'prefix' } };
+        // A chained target already carries its own marker (it is some earlier
+        // transaction's revised continuation). Keep that provenance beside the
+        // new one so the earlier transaction stays identifiable from the
+        // message itself, not only from the snapshot that undo restores.
+        const previous = readMarker(message);
+        message.extra = {
+            ...(message.extra ?? {}),
+            [METADATA_KEY]: {
+                transactionId: this.transactionId,
+                role: 'prefix',
+                ...(previous ? { parent: { transactionId: previous.transactionId, role: previous.role } } : {}),
+            },
+        };
 
         try {
             ctx.updateMessageBlock(this.targetIndex, message);
@@ -387,6 +456,8 @@ export class IntercedeTransaction {
             originalHash: this.anchor.originalMessageHash,
             affectedMessageIds: [this.targetIndex, this.targetIndex + 1, suffixIndex],
             discardedSuffixHash: hashText(this.suffix),
+            parentTransactionId: this.chain.parentTransactionId,
+            chainDepth: this.chain.depth,
             operation: 'commit',
         });
 
@@ -405,6 +476,8 @@ export class IntercedeTransaction {
                 suffixHash: hashText(this.suffix),
                 rewriteMode: this.rewriteMode,
                 vaultKey: this.vaultKey,
+                parentTransactionId: this.chain.parentTransactionId,
+                chainDepth: this.chain.depth,
                 createdAt: Date.now(),
                 committedAt: Date.now(),
             };
@@ -432,6 +505,8 @@ export class IntercedeTransaction {
             originalHash: this.anchor.originalMessageHash,
             affectedMessageIds: [this.targetIndex, this.targetIndex + 1, suffixIndex],
             discardedSuffixHash: hashText(this.suffix),
+            parentTransactionId: this.chain.parentTransactionId,
+            chainDepth: this.chain.depth,
             operation: 'commit',
         });
     }
@@ -520,6 +595,11 @@ export function getCommittedTipRecord(ctx = getCtx()) {
 
 /**
  * §14.1/§14.2 — undo the committed intercession while it is still the chat tail.
+ *
+ * Chains unwind newest-first: restoring the snapshot puts back the message the
+ * cut was made in, marker and all, so if that message was an earlier
+ * intercession's revised continuation the tail becomes that intercession again
+ * and undo can be run once more.
  * @returns {Promise<{ ok: boolean, reason?: string }>}
  */
 export async function undoIntercession() {
@@ -562,7 +642,9 @@ export async function undoIntercession() {
         affectedMessageIds: [prefixIndex, prefixIndex + 1, prefixIndex + 2],
         operation: 'undo',
     });
-    notify('success', 'Intercession undone — the original message was restored.');
+    notify('success', record.chainDepth
+        ? 'Intercession undone — the continuation it was cut from is back, and can be undone in turn.'
+        : 'Intercession undone — the original message was restored.');
     return { ok: true };
 }
 
