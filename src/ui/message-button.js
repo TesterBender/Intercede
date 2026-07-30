@@ -56,7 +56,23 @@ async function onUndoClick() {
     refreshButtonVisibility();
 }
 
+/** Wand (extensions) menu entry next to the send box — the discoverable entry point. */
+function addWandMenuItem() {
+    const menu = document.getElementById('extensionsMenu');
+    if (!menu || menu.querySelector('#intercede_wand_item')) return;
+    const item = document.createElement('div');
+    item.id = 'intercede_wand_item';
+    item.className = 'list-group-item flex-container flexGap5 interactable';
+    item.tabIndex = 0;
+    item.title = 'Respond inside the latest assistant message (Alt+I)';
+    item.appendChild(Object.assign(document.createElement('i'), { className: 'fa-solid fa-reply' }));
+    item.appendChild(Object.assign(document.createElement('span'), { textContent: 'Intercede' }));
+    item.addEventListener('click', () => openIntercede());
+    menu.appendChild(item);
+}
+
 export function initMessageButtons() {
+    addWandMenuItem();
     // Inject into the message template so every future message carries the buttons.
     const template = document.querySelector('#message_template .mes_buttons .extraMesButtons');
     if (template) {

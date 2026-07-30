@@ -111,12 +111,14 @@ function buildOverlay({ ctx, settings, raw, boundaries, targetIndex, message }) 
     const header = el('div', 'intercede-header');
     const title = el('div', 'intercede-title');
     title.append(
+        el('i', 'fa-solid fa-reply intercede-title-icon'),
         el('span', 'intercede-title-name', 'Intercede'),
-        el('span', 'intercede-title-hint', ' — pick the point where your character responds'),
+        el('span', 'intercede-title-hint', 'pick the point where your character responds'),
     );
-    const closeButton = el('button', 'menu_button intercede-close', '✕');
+    const closeButton = el('button', 'menu_button fa-solid fa-xmark intercede-close');
     closeButton.type = 'button';
     closeButton.title = 'Close (Esc)';
+    closeButton.setAttribute('aria-label', 'Close');
     closeButton.addEventListener('click', closeOverlay);
     header.append(title, closeButton);
 
@@ -152,6 +154,11 @@ function buildOverlay({ ctx, settings, raw, boundaries, targetIndex, message }) 
             button.title = isParagraph ? 'Respond here (paragraph break)' : 'Respond here (sentence break)';
             button.appendChild(el('span', 'intercede-boundary-label', isParagraph ? '⤷ respond here' : '⤷'));
             button.addEventListener('click', () => selectBoundary(i));
+            // §8.2 — hovering or focusing a boundary previews what would be rewritten.
+            button.addEventListener('mouseenter', () => previewBoundary(i, true));
+            button.addEventListener('mouseleave', () => previewBoundary(i, false));
+            button.addEventListener('focus', () => previewBoundary(i, true));
+            button.addEventListener('blur', () => previewBoundary(i, false));
             reader.appendChild(button);
             boundaryNodes.push(button);
         }
@@ -211,6 +218,13 @@ function buildOverlay({ ctx, settings, raw, boundaries, targetIndex, message }) 
     }
 }
 
+/** Dim the region that would be rewritten while a boundary is hovered/focused. */
+function previewBoundary(index, on) {
+    const state = overlayState;
+    if (!state || state.selectedIndex !== null) return;
+    state.sliceNodes.forEach((node, i) => node.classList.toggle('intercede-preview-cut', on && i > index));
+}
+
 function selectBoundary(index, draft = null) {
     const state = overlayState;
     if (!state) return;
@@ -221,6 +235,7 @@ function selectBoundary(index, draft = null) {
 
     state.boundaryNodes.forEach((node, i) => node.classList.toggle('intercede-boundary-selected', i === index));
     state.sliceNodes.forEach((node, i) => {
+        node.classList.remove('intercede-preview-cut');
         node.classList.toggle('intercede-kept', i <= index);
         node.classList.toggle('intercede-cut', i > index);
     });

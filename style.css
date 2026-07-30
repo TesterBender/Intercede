@@ -1,4 +1,8 @@
-/* ── Intercede ─────────────────────────────────────────────────────────── */
+/* ── Intercede ─────────────────────────────────────────────────────────────
+   Styled to match SillyTavern's native design language: blur-tinted panels,
+   theme-variable colors (accent = --SmartThemeQuoteColor so it follows the
+   user's theme), 10px popup radius, ~125ms motion, thin scrollbars.
+   Fallback values mirror ST's default dark theme. */
 
 /* Message-action buttons: hidden unless the message is eligible. */
 .mes_intercede,
@@ -16,17 +20,35 @@
     display: inline-block;
 }
 
+/* ── Shared tokens ─────────────────────────────────────────────────────── */
+
+.intercede-backdrop {
+    /* Accent tints fall back to flat translucency, upgraded via color-mix below. */
+    --ic-accent: var(--SmartThemeQuoteColor, rgb(225, 138, 36));
+    --ic-accent-dim: rgba(255, 255, 255, 0.08);
+    --ic-accent-glow: rgba(255, 255, 255, 0.16);
+    --ic-motion: var(--animation-duration, 125ms);
+}
+
+@supports (background: color-mix(in srgb, red 10%, transparent)) {
+    .intercede-backdrop {
+        --ic-accent-dim: color-mix(in srgb, var(--ic-accent) 13%, transparent);
+        --ic-accent-glow: color-mix(in srgb, var(--ic-accent) 26%, transparent);
+    }
+}
+
 /* ── Overlay / modal shells ────────────────────────────────────────────── */
 
 .intercede-backdrop {
     position: fixed;
     inset: 0;
     z-index: 4900;
-    background: rgba(0, 0, 0, 0.6);
+    background: var(--black70a, rgba(0, 0, 0, 0.7));
     display: flex;
     align-items: center;
     justify-content: center;
     padding: 10px;
+    animation: intercede-fade var(--ic-motion) ease-out;
 }
 
 .intercede-modal-backdrop {
@@ -38,11 +60,35 @@
     flex-direction: column;
     width: min(900px, 96vw);
     max-height: 92vh;
-    background: var(--SmartThemeBlurTintColor, rgb(30, 30, 38));
-    color: var(--SmartThemeBodyColor, #e8e8e8);
-    border: 1px solid var(--SmartThemeBorderColor, #555);
+    background-color: var(--SmartThemeBlurTintColor, rgba(23, 23, 23, 0.95));
+    backdrop-filter: blur(var(--SmartThemeBlurStrength, 10px));
+    color: var(--SmartThemeBodyColor, rgb(220, 220, 210));
+    font-family: var(--mainFontFamily, "Noto Sans", sans-serif);
+    border: 1px solid var(--SmartThemeBorderColor, rgba(0, 0, 0, 0.5));
     border-radius: 10px;
-    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.55);
+    box-shadow: 0 0 14px var(--black70a, rgba(0, 0, 0, 0.7));
+    animation: intercede-pop calc(var(--ic-motion) * 2) ease-out;
+}
+
+@keyframes intercede-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes intercede-pop {
+    from { opacity: 0; transform: translateY(8px) scale(0.99); }
+    to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .intercede-backdrop,
+    .intercede-panel,
+    .intercede-composer {
+        animation: none;
+    }
+    .intercede-slice {
+        transition: none;
+    }
 }
 
 .intercede-header {
@@ -51,7 +97,18 @@
     justify-content: space-between;
     gap: 8px;
     padding: 10px 14px;
-    border-bottom: 1px solid var(--SmartThemeBorderColor, #555);
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(0, 0, 0, 0.5));
+}
+
+.intercede-title {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5em;
+    min-width: 0;
+}
+
+.intercede-title-icon {
+    color: var(--ic-accent);
 }
 
 .intercede-title-name {
@@ -59,11 +116,15 @@
 }
 
 .intercede-title-hint {
-    opacity: 0.7;
+    color: var(--SmartThemeEmColor, rgb(145, 145, 145));
     font-size: 0.9em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .intercede-close {
+    aspect-ratio: 1;
     min-width: 2em;
 }
 
@@ -72,19 +133,35 @@
     padding: 14px 18px;
 }
 
+.intercede-body::-webkit-scrollbar {
+    width: 0.7rem;
+}
+
+.intercede-body::-webkit-scrollbar-thumb {
+    background-color: var(--grey7070a, rgba(112, 112, 112, 0.7));
+    border-radius: 10px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+}
+
 .intercede-footer {
     padding: 8px 14px;
-    border-top: 1px solid var(--SmartThemeBorderColor, #555);
-    opacity: 0.6;
-    font-size: 0.85em;
+    border-top: 1px solid var(--SmartThemeBorderColor, rgba(0, 0, 0, 0.5));
+    color: var(--SmartThemeEmColor, rgb(145, 145, 145));
+    font-size: 0.8em;
+    text-align: center;
 }
 
 /* ── Reading area ──────────────────────────────────────────────────────── */
 
 .intercede-reader {
     white-space: pre-wrap;
-    line-height: 1.55;
+    line-height: 1.6;
     word-break: break-word;
+}
+
+.intercede-slice {
+    transition: opacity var(--ic-motion) ease;
 }
 
 .intercede-slice-block {
@@ -92,48 +169,62 @@
     margin-top: 0.8em;
 }
 
-.intercede-slice.intercede-cut {
-    opacity: 0.45;
+.intercede-slice.intercede-cut,
+.intercede-slice.intercede-preview-cut {
+    opacity: 0.38;
 }
 
+/* Paragraph markers: a thin insertion rule with a centered chip, editor-style. */
 .intercede-boundary {
-    background: transparent;
-    color: var(--SmartThemeQuoteColor, #7aa2f7);
-    border: 1px dashed transparent;
-    cursor: pointer;
-    border-radius: 6px;
     font: inherit;
     line-height: inherit;
-}
-
-.intercede-boundary-sentence {
-    display: inline;
-    padding: 0 0.35em;
-    margin: 0 0.15em;
-    opacity: 0.55;
+    cursor: pointer;
+    background: transparent;
+    border: none;
+    color: var(--ic-accent);
+    transition: opacity var(--ic-motion) ease, background-color var(--ic-motion) ease;
 }
 
 .intercede-boundary-paragraph {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: 0.6em;
     width: 100%;
-    text-align: left;
-    margin: 0.5em 0;
-    padding: 0.15em 0.5em;
-    opacity: 0.7;
-    border-color: var(--SmartThemeQuoteColor, #7aa2f7);
+    margin: 0.4em 0;
+    padding: 0.15em 0.4em;
+    border-radius: 6px;
+    opacity: 0.45;
+    font-size: 0.85em;
+}
+
+.intercede-boundary-paragraph::before,
+.intercede-boundary-paragraph::after {
+    content: '';
+    flex: 1;
+    border-top: 1px dashed currentColor;
+    opacity: 0.6;
+}
+
+/* Sentence markers: small inline chips, dim until noticed. */
+.intercede-boundary-sentence {
+    display: inline-block;
+    padding: 0 0.45em;
+    margin: 0 0.2em;
+    border-radius: 4px;
+    opacity: 0.35;
+    font-size: 0.9em;
 }
 
 .intercede-boundary:hover,
 .intercede-boundary:focus {
     opacity: 1;
-    background: rgba(122, 162, 247, 0.12);
+    background-color: var(--ic-accent-dim);
     outline: none;
-    border-color: var(--SmartThemeQuoteColor, #7aa2f7);
 }
 
 .intercede-boundary-selected {
     opacity: 1;
-    background: rgba(122, 162, 247, 0.2);
+    background-color: var(--ic-accent-glow);
 }
 
 .intercede-boundary-label {
@@ -144,12 +235,15 @@
 
 .intercede-composer {
     display: block;
-    margin: 0.6em 0;
-    padding: 0.7em;
-    border: 1px solid var(--SmartThemeQuoteColor, #7aa2f7);
+    margin: 0.7em 0;
+    padding: 0.8em;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(0, 0, 0, 0.5));
+    border-left: 3px solid var(--ic-accent);
     border-radius: 8px;
-    background: rgba(122, 162, 247, 0.07);
+    background-color: var(--black30a, rgba(0, 0, 0, 0.3));
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
     white-space: normal;
+    animation: intercede-pop calc(var(--ic-motion) * 2) ease-out;
 }
 
 .intercede-composer-text {
@@ -162,7 +256,7 @@
 .intercede-composer-controls {
     display: flex;
     gap: 8px;
-    margin-top: 6px;
+    margin-top: 8px;
     flex-wrap: wrap;
     align-items: center;
 }
@@ -173,13 +267,20 @@
 }
 
 .intercede-composer-hint {
-    margin-top: 6px;
-    opacity: 0.6;
+    margin-top: 8px;
+    color: var(--SmartThemeEmColor, rgb(145, 145, 145));
     font-size: 0.85em;
 }
 
 .intercede-primary {
+    border-color: var(--ic-accent) !important;
+    color: var(--ic-accent);
     font-weight: bold;
+}
+
+.intercede-primary:hover,
+.intercede-primary:focus {
+    background-color: var(--ic-accent-dim);
 }
 
 /* ── Modal dialogs ─────────────────────────────────────────────────────── */
@@ -191,7 +292,7 @@
 .intercede-modal-title {
     font-weight: bold;
     padding: 10px 14px;
-    border-bottom: 1px solid var(--SmartThemeBorderColor, #555);
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(0, 0, 0, 0.5));
 }
 
 .intercede-modal-body {
@@ -200,19 +301,30 @@
     white-space: pre-wrap;
 }
 
+.intercede-modal-body::-webkit-scrollbar {
+    width: 0.7rem;
+}
+
+.intercede-modal-body::-webkit-scrollbar-thumb {
+    background-color: var(--grey7070a, rgba(112, 112, 112, 0.7));
+    border-radius: 10px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+}
+
 .intercede-modal-buttons {
     display: flex;
     gap: 8px;
     justify-content: flex-end;
     padding: 10px 14px;
-    border-top: 1px solid var(--SmartThemeBorderColor, #555);
+    border-top: 1px solid var(--SmartThemeBorderColor, rgba(0, 0, 0, 0.5));
 }
 
 /* ── Comparison / confirmation views ───────────────────────────────────── */
 
 .intercede-compare-meter {
     margin-bottom: 0.6em;
-    opacity: 0.8;
+    color: var(--SmartThemeEmColor, rgb(145, 145, 145));
     font-size: 0.9em;
 }
 
@@ -221,33 +333,38 @@
 }
 
 .intercede-compare-heading {
+    font-size: 0.85em;
     font-weight: bold;
-    opacity: 0.8;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--SmartThemeEmColor, rgb(145, 145, 145));
     margin-bottom: 0.25em;
 }
 
 .intercede-compare-text {
     white-space: pre-wrap;
-    border: 1px solid var(--SmartThemeBorderColor, #555);
+    border: 1px solid var(--SmartThemeBorderColor, rgba(0, 0, 0, 0.5));
     border-radius: 6px;
     padding: 0.5em 0.7em;
+    background-color: var(--black30a, rgba(0, 0, 0, 0.3));
     max-height: 30vh;
     overflow-y: auto;
     word-break: break-word;
 }
 
 .intercede-compare-original {
-    opacity: 0.75;
+    opacity: 0.7;
     border-style: dashed;
 }
 
 .intercede-compare-insertion {
-    border-color: var(--SmartThemeQuoteColor, #7aa2f7);
+    border-left: 3px solid var(--ic-accent);
 }
 
 .intercede-confirm-warning {
-    color: #e0af68;
+    color: var(--warning, #e0af68);
     margin-top: 0.4em;
+    font-size: 0.9em;
 }
 
 /* ── Settings panel ────────────────────────────────────────────────────── */
@@ -259,7 +376,7 @@
 }
 
 .intercede-settings-note {
-    opacity: 0.65;
+    color: var(--SmartThemeEmColor, rgb(145, 145, 145));
 }
 
 .intercede-settings-actions {
@@ -274,5 +391,26 @@
         height: 100dvh;
         max-height: 100dvh;
         border-radius: 0;
+    }
+
+    .intercede-boundary-paragraph {
+        min-height: 2.2em;
+        font-size: 1em;
+    }
+
+    .intercede-boundary-sentence {
+        min-height: 1.8em;
+        min-width: 1.8em;
+    }
+
+    .intercede-composer-controls .menu_button {
+        flex: 1 1 auto;
+        text-align: center;
+        padding: 8px;
+    }
+
+    .intercede-mode-select {
+        flex-basis: 100%;
+        max-width: none;
     }
 }
