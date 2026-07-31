@@ -141,7 +141,9 @@ export async function confirmAndCommit({ chatId, targetIndex, raw, boundary, ins
     const transaction = new IntercedeTransaction({ targetIndex, anchor, insertionText, rewriteMode });
     try {
         const result = await transaction.run();
-        drafts.delete(draftKey(chatId, targetIndex));
+        // Same identity the draft was stored under — the text it was written
+        // against, not just its position. @see docs/RATIONALE.md#UI-05
+        setDraft({ chatId, targetIndex, raw }, null);
         notify('success', 'Intercession committed. Swipe the new continuation for other adaptations, intercede it again to answer inside it, or /intercede undo to restore.');
         for (const warning of result.warnings) {
             notify('warning', warning, { timeOut: 8000 });

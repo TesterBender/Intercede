@@ -162,6 +162,31 @@ describe('drafts', () => {
         expect(getDraft({ ...target })).toMatchObject({ text: 'My response.' });
     });
 
+    it('forgets the draft once the intercession commits', async () => {
+        // The commit path deletes by key too, and a signature that drifts from
+        // draftKey() fails silently: the map keeps growing and a stale draft
+        // reappears the next time the same text is interceded.
+        const { ctx } = await setup();
+        ctx.generate = vi.fn(respondWith(ctx, 'Revised continuation.'));
+        const { confirmAndCommit, getDraft, setDraft } = await import('../src/ui/commit-flow.js');
+        const target = { chatId: 'chat-1', targetIndex: 1, raw: ORIGINAL };
+        setDraft(target, { text: 'My response.', boundaryOffset: CUT_OFFSET });
+
+        const committed = await confirmAndCommit({
+            ...target,
+            boundary: { offset: CUT_OFFSET, type: 'sentence' },
+            insertionText: 'My response.',
+            rewriteMode: 'adaptive',
+            message: ctx.chat[1],
+            settings: { confirmBeforeCommit: false, compareAfterCommit: false, warnExtensions: false },
+            closeMode: () => {},
+        });
+
+        expect(committed).toBe(true);
+        expect(ctx.chat).toHaveLength(4);
+        expect(getDraft(target)).toBeNull();
+    });
+
     it('does not restore it onto different text at the same index', async () => {
         // A swipe, an edit or a rollback can put other content at this index,
         // and the stored offset would point into text the user never saw.

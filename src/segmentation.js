@@ -26,6 +26,19 @@ const WITHIN_BLOCK = String.raw`(?:(?!\n[^\S\n]*\n)[\s\S])`;
  */
 const ESCAPED = String.raw`\\[^\n]`;
 
+/**
+ * Zero-width assertion: this position is not preceded by an *odd* run of
+ * backslashes, i.e. the delimiter starting here is not escaped.
+ *
+ * Parity is the whole point. `\*` is a literal asterisk, but `\\*` is a literal
+ * backslash followed by a live delimiter, and `\\\*` is escaped again. A plain
+ * `(?<!\\)` sees only the nearest backslash, so it reads every even run as an
+ * escape and silently drops real emphasis — under-protection, which is the
+ * direction that hands the user a broken cut.
+ * @see docs/RATIONALE.md#SEG-07
+ */
+const NOT_ESCAPED = String.raw`(?<!(?<!\\)(?:\\\\)*\\)`;
+
 /** Body of an emphasis span: escapes first, then anything that is not `delim`. */
 const spanBody = (delim) => String.raw`(?:${ESCAPED}|(?!${delim})${WITHIN_BLOCK})+?`;
 
@@ -40,16 +53,16 @@ const spanBody = (delim) => String.raw`(?:${ESCAPED}|(?!${delim})${WITHIN_BLOCK}
  */
 const EMPHASIS_PATTERNS = [
     // ~~strikethrough~~
-    String.raw`(?<!\\)~~(?!\s)${spanBody('~~')}(?<![\s\\])~~`,
+    String.raw`${NOT_ESCAPED}~~(?!\s)${spanBody('~~')}(?<!\s)${NOT_ESCAPED}~~`,
     // ***bold italic*** first: the `**` pattern alone would stop one delimiter
     // short and leave a cut legal between the second and third asterisk.
-    String.raw`(?<![\\*])\*\*\*(?!\s)${spanBody(String.raw`\*\*\*`)}(?<![\s\\])\*\*\*`,
+    String.raw`(?<!\*)${NOT_ESCAPED}\*\*\*(?!\s)${spanBody(String.raw`\*\*\*`)}(?<!\s)${NOT_ESCAPED}\*\*\*`,
     // **strong** and __strong__
-    String.raw`(?<![\\*])\*\*(?!\s)${spanBody(String.raw`\*\*`)}(?<![\s\\])\*\*`,
-    String.raw`(?<![\w_\\])__(?!\s)${spanBody('__')}(?<![\s\\])__(?![\w_])`,
+    String.raw`(?<!\*)${NOT_ESCAPED}\*\*(?!\s)${spanBody(String.raw`\*\*`)}(?<!\s)${NOT_ESCAPED}\*\*`,
+    String.raw`(?<![\w_])${NOT_ESCAPED}__(?!\s)${spanBody('__')}(?<!\s)${NOT_ESCAPED}__(?![\w_])`,
     // *emphasis* and _emphasis_
-    String.raw`(?<![\\*])\*(?!\s)${spanBody(String.raw`\*`)}(?<![\s\\])\*(?!\*)`,
-    String.raw`(?<![\w_\\])_(?!\s)${spanBody('_')}(?<![\s\\])_(?![\w_])`,
+    String.raw`(?<!\*)${NOT_ESCAPED}\*(?!\s)${spanBody(String.raw`\*`)}(?<!\s)${NOT_ESCAPED}\*(?!\*)`,
+    String.raw`(?<![\w_])${NOT_ESCAPED}_(?!\s)${spanBody('_')}(?<!\s)${NOT_ESCAPED}_(?![\w_])`,
 ].map(source => new RegExp(source, 'g'));
 
 /** A line that opens a bullet or ordered list item. */

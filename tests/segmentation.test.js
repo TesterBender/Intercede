@@ -145,6 +145,46 @@ describe('emphasis protection', () => {
         expect(isOffsetProtected(text.indexOf(' Sentence one.'), ranges)).toBe(true);
     });
 
+    describe('backslash parity', () => {
+        // `\*` is a literal asterisk; `\\*` is a literal backslash followed by a
+        // live delimiter. Only an odd run escapes. @see docs/RATIONALE.md#SEG-07
+        const BS = String.fromCharCode(92);
+
+        it.each([
+            [0, true],
+            [1, false],
+            [2, true],
+            [3, false],
+            [4, true],
+        ])('%i backslashes before the opener → emphasis recognised: %s', (count, recognised) => {
+            const text = `He said ${BS.repeat(count)}*one. two* aloud.`;
+            const emphasis = getProtectedRanges(text).filter(range => range.kind === 'emphasis');
+
+            expect(emphasis.length > 0).toBe(recognised);
+        });
+
+        it.each([
+            [0, true],
+            [1, false],
+            [2, true],
+        ])('%i backslashes before the closer → closes there: %s', (count, closesHere) => {
+            const text = `*one. two${BS.repeat(count)}* and *more here*`;
+            const emphasis = getProtectedRanges(text).filter(range => range.kind === 'emphasis');
+            const firstSpan = text.slice(emphasis[0].start, emphasis[0].end);
+
+            // When the closer is escaped the span runs on to a later delimiter,
+            // which over-protects — the safe direction.
+            expect(firstSpan === `*one. two${BS.repeat(count)}*`).toBe(closesHere);
+        });
+
+        it('keeps the cut after an even-run delimiter available', () => {
+            const text = `A backslash ${BS}${BS}*and emphasis* here. Then more.`;
+
+            expect(offersCutBefore(text, 'Then more')).toBe(true);
+            expect(isOffsetProtected(text.indexOf('and emphasis'), getProtectedRanges(text))).toBe(true);
+        });
+    });
+
     it('protects a bold-italic run to its last delimiter', () => {
         const text = '***Both at once. And again.*** After the run.';
         const ranges = getProtectedRanges(text);

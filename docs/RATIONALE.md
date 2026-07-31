@@ -1050,9 +1050,14 @@ Three rules follow CommonMark rather than intuition, and each was a real hole:
 - **`*` may open inside a word, `_` may not.** `foo*bar*baz` renders as emphasis;
   `snake_case_name` does not. A lookbehind that excluded a preceding word character for
   both — which is what the first version did — left intraword emphasis unprotected.
-- **An escaped delimiter is text.** `ESCAPED` consumes `\*` as one unit, so it neither
-  opens a span nor closes one early. Without it, `*Escaped \* here. More.*` ended at the
-  escape and every cut in the rest of the real span became legal.
+- **An escaped delimiter is text — and escaping is a parity question.** `ESCAPED`
+  consumes `\*` as one unit inside a span, and `NOT_ESCAPED` guards every delimiter
+  position outside one. Parity is what makes it correct: `\*` is a literal asterisk, but
+  `\\*` is a literal backslash followed by a *live* delimiter, and `\\\*` is escaped
+  again. A plain `(?<!\\)` sees only the nearest backslash, so it read every even run as
+  an escape and dropped the emphasis entirely — under-protection, the direction that
+  hands out a broken cut. The assertion is
+  `(?<!(?<!\\)(?:\\\\)*\\)`: no odd run of backslashes ends here.
 - **`***` is matched before `**`.** Otherwise the `**` pattern stops one delimiter short
   and leaves a cut legal *between* the second and third asterisk.
 
@@ -1261,6 +1266,13 @@ draft the user cannot use anyway, instead of restoring one onto the wrong messag
 
 `resolveSelectionTarget()` computes the hash once, next to the boundaries it belongs
 with, so both interfaces key drafts identically by construction.
+
+Every path in or out of the map goes through `draftKey()` with the same identity object —
+storing, reading, and *forgetting after a successful commit*. The commit path is the easy
+one to miss, and missing it fails silently: the delete computes a key nothing was stored
+under, so the map grows and the stale draft resurfaces the next time that message is
+interceded. There is a test for the clearing path specifically, because nothing else
+observes it.
 
 <a id="UI-06"></a>
 ### UI-06 — Foreign continuation metadata is surfaced, not blocked
