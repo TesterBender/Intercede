@@ -161,9 +161,11 @@ the re-validation above. A small console API is exposed at `window.Intercede`.
   newest-first; an earlier link cannot be undone without undoing the ones above it.
 - Undo snapshots are stored in this browser's storage and do not travel with exported chats
   (deliberate: no invisible chat-file inflation).
-- No cutting inside code fences, inline code, links, HTML tags, macros, unfinished quotes,
-  paired Markdown emphasis (`**bold**`, `_italic_`, `~~strike~~`), or a run of list items
-  (deliberate: those boundaries are unsafe). A paragraph boundary requires a blank line, so
+- No cutting inside code fences, inline code, HTML tags, macros, unfinished quotes, paired
+  Markdown emphasis (`**bold**`, `_italic_`, `~~strike~~`, including intraword `*em*` and
+  escaped delimiters), a run of list items, or links — inline, reference (`[a][b]`,
+  `[a][]`) and definition lines. The one link form left unprotected is the shortcut
+  `[label]`, which is indistinguishable from ordinary bracketed prose such as `[OOC: …]`. A paragraph boundary requires a blank line, so
   a message written with single newlines between its lines offers paragraph boundaries only
   where a blank line actually appears — switch to "Paragraphs and sentences" for those.
 - Switching Intercede off in the settings stops new intercessions everywhere (wand, Alt+I,

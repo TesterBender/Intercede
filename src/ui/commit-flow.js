@@ -9,24 +9,39 @@ import { REWRITE_MODE_LABELS } from '../constants.js';
 import { splitAtOffset } from '../segmentation.js';
 import { getCtx } from '../stcontext.js';
 import { getChainPosition, IntercedeTransaction } from '../transaction.js';
-import { el, notify, truncate } from '../utils.js';
+import { el, hashText, notify, truncate } from '../utils.js';
 import { showCompare } from './compare.js';
 import { showConfirm } from './modal.js';
 
 /** Drafts survive a failed or cancelled intercession (§18). @see docs/RATIONALE.md#UI-04 */
 const drafts = new Map();
 
-function draftKey(chatId, targetIndex) {
-    return `${chatId}::${targetIndex}`;
+/**
+ * Identity of the text a draft was written against.
+ *
+ * The position alone is not identity: a swipe, an edit, or a rollback can put
+ * different content at the same index, and the stored boundary offset would
+ * then point into text the user never saw. The source hash makes that a miss
+ * rather than a wrong restore.
+ * @see docs/RATIONALE.md#UI-05
+ * @param {{ chatId: string, targetIndex: number, raw?: string, sourceHash?: string }} target
+ */
+function draftKey(target) {
+    const sourceHash = target.sourceHash ?? hashText(target.raw ?? '');
+    return `${target.chatId}::${target.targetIndex}::${sourceHash}`;
 }
 
-export function getDraft(chatId, targetIndex) {
-    return drafts.get(draftKey(chatId, targetIndex)) ?? null;
+/** @param {{ chatId: string, targetIndex: number, raw?: string, sourceHash?: string }} target */
+export function getDraft(target) {
+    return drafts.get(draftKey(target)) ?? null;
 }
 
-/** @param {{ text: string, mode?: string, boundaryOffset?: number | null } | null} draft */
-export function setDraft(chatId, targetIndex, draft) {
-    const key = draftKey(chatId, targetIndex);
+/**
+ * @param {{ chatId: string, targetIndex: number, raw?: string, sourceHash?: string }} target
+ * @param {{ text: string, mode?: string, boundaryOffset?: number | null } | null} draft
+ */
+export function setDraft(target, draft) {
+    const key = draftKey(target);
     if (draft?.text?.trim()) {
         drafts.set(key, draft);
     } else {

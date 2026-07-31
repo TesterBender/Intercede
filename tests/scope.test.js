@@ -145,6 +145,36 @@ describe('intercede_invalidated', () => {
     });
 });
 
+describe('drafts', () => {
+    // @see docs/RATIONALE.md#UI-05
+    async function drafts() {
+        vi.resetModules();
+        installFakeSillyTavern({ chat: baseChat() });
+        return import('../src/ui/commit-flow.js');
+    }
+
+    it('restores a draft onto the text it was written against', async () => {
+        const { getDraft, setDraft } = await drafts();
+        const target = { chatId: 'chat-1', targetIndex: 1, raw: ORIGINAL };
+
+        setDraft(target, { text: 'My response.', boundaryOffset: CUT_OFFSET });
+
+        expect(getDraft({ ...target })).toMatchObject({ text: 'My response.' });
+    });
+
+    it('does not restore it onto different text at the same index', async () => {
+        // A swipe, an edit or a rollback can put other content at this index,
+        // and the stored offset would point into text the user never saw.
+        const { getDraft, setDraft } = await drafts();
+        const target = { chatId: 'chat-1', targetIndex: 1, raw: ORIGINAL };
+        setDraft(target, { text: 'My response.', boundaryOffset: CUT_OFFSET });
+
+        const afterSwipe = getDraft({ ...target, raw: 'A completely different continuation.' });
+
+        expect(afterSwipe).toBeNull();
+    });
+});
+
 describe('snapshot cleanup', () => {
     const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -174,6 +204,22 @@ describe('snapshot cleanup', () => {
 
         expect(result).toMatchObject({ ok: false, removed: 0 });
         expect(result.reason).toMatch(/in progress/i);
+    });
+
+    it('refuses to run while the recovery latch is set', async () => {
+        // The latch means something is unresolved that the journal and metadata
+        // may no longer describe, so the same guard Finalize uses applies here.
+        const { ctx, transaction } = await setup();
+        ctx.generate = vi.fn(async () => {
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, 'normal', {}, false);
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, 'normal');
+        });
+        await expect(runTransaction(transaction, { ctx, offset: CUT_OFFSET })).rejects.toThrow();
+
+        const cleanup = await transaction.cleanupSnapshots(1);
+
+        expect(cleanup).toMatchObject({ ok: false, removed: 0 });
+        expect(cleanup.reason).toMatch(/recover/i);
     });
 
     it('keeps a snapshot the chat metadata still points at, however old', async () => {
@@ -247,17 +293,41 @@ describe('finalize', () => {
         expect(record.vaultKey).toBeUndefined();
     });
 
-    it('records the decision before deleting, so a failed delete cannot leak', async () => {
-        // If the metadata save is what fails, the snapshot must still be there
-        // and undo must still work — never gone while still advertised.
+    /**
+     * Finalize's contract on a failed save: undo must still be *usable*, not
+     * merely recoverable by reloading. The in-memory record is what
+     * canUndoTip() reads, so leaving it mutated would advertise no undo while
+     * the snapshot it needs is still in the vault.
+     */
+    it.each([
+        ['saveChat', (ctx) => { ctx.saveChat = vi.fn(async () => { throw new Error('disk full'); }); }],
+        ['saveMetadata', (ctx) => { ctx.saveMetadata = vi.fn(async () => { throw new Error('quota'); }); }],
+    ])('leaves undo working when %s fails', async (_label, breakPersistence) => {
         const { ctx, transaction, vault } = await setup();
         const result = await commitOne({ ctx, transaction });
-        const key = ctx.chatMetadata.intercede.transactions[result.transactionId].vaultKey;
-        ctx.saveChat = vi.fn(async () => { throw new Error('disk full'); });
+        const record = ctx.chatMetadata.intercede.transactions[result.transactionId];
+        const key = record.vaultKey;
+        breakPersistence(ctx);
 
         await expect(transaction.finalizeIntercession()).rejects.toThrow();
 
         expect(await vault.vaultGet(key)).toBeTruthy();
+        const after = ctx.chatMetadata.intercede.transactions[result.transactionId];
+        expect(after.vaultKey).toBe(key);
+        expect(after.finalizedAt).toBeUndefined();
+        await expect(transaction.canUndoTip()).resolves.toBe(true);
+    });
+
+    it('can still undo in the same session after a failed finalize', async () => {
+        const { ctx, transaction } = await setup();
+        await commitOne({ ctx, transaction });
+        ctx.saveChat = vi.fn(async () => { throw new Error('disk full'); });
+        await expect(transaction.finalizeIntercession()).rejects.toThrow();
+        ctx.saveChat = vi.fn(async () => {});
+
+        await expect(transaction.undoIntercession()).resolves.toMatchObject({ ok: true });
+        expect(ctx.chat).toHaveLength(2);
+        expect(ctx.chat[1].mes).toBe(ORIGINAL);
     });
 
     it('refuses while an unfinished intercession is still journaled', async () => {

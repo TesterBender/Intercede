@@ -21,26 +21,44 @@ import { BOUNDARY_TYPES } from './constants.js';
 const WITHIN_BLOCK = String.raw`(?:(?!\n[^\S\n]*\n)[\s\S])`;
 
 /**
+ * A backslash-escaped character. Consumed as one unit so a `\*` inside a span
+ * neither closes it nor stops the scan, and never opens one either.
+ */
+const ESCAPED = String.raw`\\[^\n]`;
+
+/** Body of an emphasis span: escapes first, then anything that is not `delim`. */
+const spanBody = (delim) => String.raw`(?:${ESCAPED}|(?!${delim})${WITHIN_BLOCK})+?`;
+
+/**
  * Paired Markdown emphasis. Each pattern requires a non-space character just
  * inside both delimiters, which is what makes the pair render as emphasis at
  * all — so text these miss was not emphasis to begin with.
+ *
+ * `*` may open inside a word (CommonMark allows `foo*bar*baz`); `_` may not,
+ * which is what keeps snake_case out.
  * @see docs/RATIONALE.md#SEG-07
  */
 const EMPHASIS_PATTERNS = [
     // ~~strikethrough~~
-    String.raw`~~(?!\s)(?:(?!~~)${WITHIN_BLOCK})+?(?<!\s)~~`,
+    String.raw`(?<!\\)~~(?!\s)${spanBody('~~')}(?<![\s\\])~~`,
+    // ***bold italic*** first: the `**` pattern alone would stop one delimiter
+    // short and leave a cut legal between the second and third asterisk.
+    String.raw`(?<![\\*])\*\*\*(?!\s)${spanBody(String.raw`\*\*\*`)}(?<![\s\\])\*\*\*`,
     // **strong** and __strong__
-    String.raw`\*\*(?!\s)(?:(?!\*\*)${WITHIN_BLOCK})+?(?<!\s)\*\*`,
-    String.raw`(?<![\w_])__(?!\s)(?:(?!__)${WITHIN_BLOCK})+?(?<!\s)__(?![\w_])`,
-    // *emphasis* and _emphasis_ — the lookarounds keep a*b and snake_case out
-    String.raw`(?<![\w*])\*(?!\s)(?:(?!\*)${WITHIN_BLOCK})+?(?<!\s)\*(?!\*)`,
-    String.raw`(?<![\w_])_(?!\s)(?:(?!_)${WITHIN_BLOCK})+?(?<!\s)_(?![\w_])`,
+    String.raw`(?<![\\*])\*\*(?!\s)${spanBody(String.raw`\*\*`)}(?<![\s\\])\*\*`,
+    String.raw`(?<![\w_\\])__(?!\s)${spanBody('__')}(?<![\s\\])__(?![\w_])`,
+    // *emphasis* and _emphasis_
+    String.raw`(?<![\\*])\*(?!\s)${spanBody(String.raw`\*`)}(?<![\s\\])\*(?!\*)`,
+    String.raw`(?<![\w_\\])_(?!\s)${spanBody('_')}(?<![\s\\])_(?![\w_])`,
 ].map(source => new RegExp(source, 'g'));
 
 /** A line that opens a bullet or ordered list item. */
 const LIST_ITEM_REGEX = /^[^\S\n]{0,3}(?:[-*+]|\d{1,9}[.)])[^\S\n]+\S/;
 /** An indented line continuing the item above it. */
 const LIST_CONTINUATION_REGEX = /^[^\S\n]{2,}\S/;
+
+/** True when this line keeps a list run open across a blank line. */
+const resumesList = (line) => LIST_ITEM_REGEX.test(line) || LIST_CONTINUATION_REGEX.test(line);
 
 /**
  * Protect each run of list items as one unit.
@@ -74,8 +92,9 @@ function addListRanges(text, ranges) {
             continue;
         } else if (LIST_CONTINUATION_REGEX.test(line)) {
             end = lineStarts[i] + line.length;
-        } else if (!line.trim() && LIST_ITEM_REGEX.test(lines[i + 1] ?? '')) {
-            // A loose list keeps the blank line between its items inside the run.
+        } else if (!line.trim() && resumesList(lines[i + 1] ?? '')) {
+            // A loose list keeps the blank line inside the run — whether what
+            // follows is the next item or an indented continuation of this one.
         } else {
             flush();
         }
@@ -124,6 +143,10 @@ export function getProtectedRanges(text) {
     addMatches(/(`+)(?!`)[\s\S]*?\1/g, 'inline-code');
     // Markdown links and images (single-line forms).
     addMatches(/!?\[[^\]\n]*\]\([^)\n]*\)/g, 'link');
+    // Reference-style links, and the definitions they resolve against.
+    // @see docs/RATIONALE.md#SEG-09 why the shortcut form `[label]` is excluded
+    addMatches(/!?\[[^\]\n]*\]\[[^\]\n]*\]/g, 'link');
+    addMatches(/^[^\S\n]{0,3}\[[^\]\n]+\]:[^\n]*/gm, 'link-definition');
     // Raw HTML tags (the tag itself, not its content).
     addMatches(/<\/?[a-zA-Z][^<>\n]*>/g, 'html-tag');
     // Macro expressions.

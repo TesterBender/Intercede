@@ -295,9 +295,17 @@ behind:
    orphaned by a failed step 3 would otherwise be protected forever — a permanent leak
    that no sweep can reach.
 2. **Persist the decision** (`finalizedAt` set, `vaultKey` deleted) while the snapshot
-   still exists. If this fails, the snapshot is intact and undo still works; the only
-   trace is a finalized flag on a record still referenced, which the next attempt
-   overwrites.
+   still exists — and **restore the in-memory record if the save throws**. That restore
+   is not tidiness. `canUndoTip()` reads the in-memory record, so a mutated record with a
+   failed save means this session advertises no undo while the snapshot it needs is still
+   sitting in the vault. Only a reload, which re-reads the unchanged metadata from disk,
+   would have brought it back. With the restore, undo keeps working immediately.
+
+   `persistChatAndMetadata()` saves the chat then the metadata, so `saveChat()` can
+   succeed while `saveMetadata()` fails. The restore is the same either way: memory says
+   "not finalized" and undo works, and if the finalized state did reach disk, the next
+   reload reports undo as gone — correctly, since the vault record is marked finalized
+   and collectable. At no point is undo gone while still advertised.
 3. **Delete the snapshot.** Only now is it expendable. If this fails, undo is already
    correctly advertised as gone and the record is collectable by age.
 
@@ -764,9 +772,12 @@ active transaction's key, a non-terminal journal's key, and every metadata recor
 a `finalizedAt`.
 
 `cleanupSnapshots()` is therefore the only entry point any caller should use; calling
-`cleanupVault()` directly means cleaning up with the references missing. It also refuses
+`cleanupVault()` directly means cleaning up with the references missing. It refuses
 outright while a transaction is in progress, because the snapshot being written is the one
-thing a sweep must not race.
+thing a sweep must not race — and equally while the recovery-required latch
+([TX-11](#TX-11)) is set, since the latch means something is unresolved that the journal
+and metadata may no longer describe. That is the same guard [TX-14](#TX-14) uses, for the
+same reason: the sweep would be taking the evidence.
 
 <a id="VAULT-03"></a>
 ### VAULT-03 — Best-effort vs strict writes
@@ -1034,12 +1045,29 @@ CommonMark requires for the pair to render as emphasis at all: text these patter
 was never emphasis. `WITHIN_BLOCK` forbids a blank line inside a match, so an unclosed
 delimiter cannot pair with one three paragraphs away and protect everything between.
 
+Three rules follow CommonMark rather than intuition, and each was a real hole:
+
+- **`*` may open inside a word, `_` may not.** `foo*bar*baz` renders as emphasis;
+  `snake_case_name` does not. A lookbehind that excluded a preceding word character for
+  both — which is what the first version did — left intraword emphasis unprotected.
+- **An escaped delimiter is text.** `ESCAPED` consumes `\*` as one unit, so it neither
+  opens a span nor closes one early. Without it, `*Escaped \* here. More.*` ended at the
+  escape and every cut in the rest of the real span became legal.
+- **`***` is matched before `**`.** Otherwise the `**` pattern stops one delimiter short
+  and leaves a cut legal *between* the second and third asterisk.
+
 Over-matching only ever forbids a cut, so the failure direction is a boundary the user
-does not get. Under-matching hands them a broken one.
+does not get. Under-matching hands them a broken one. Where the two conflict — an
+ambiguous or unmatched delimiter run — protect.
+
+These are regexes, not a CommonMark delimiter scanner, and a scanner is the honest fix if
+this list grows again. The line to watch: every rule here is expressible as "which
+character pairs bind", and once one needs to know what *else* matched, the regexes are
+the wrong tool.
 
 <a id="SEG-08"></a>
 ### SEG-08 — A list is one unit
-**Sites:** `src/segmentation.js` › `addListRanges()`, `LIST_ITEM_REGEX`, `LIST_CONTINUATION_REGEX`
+**Sites:** `src/segmentation.js` › `addListRanges()`, `LIST_ITEM_REGEX`, `LIST_CONTINUATION_REGEX`, `resumesList()`
 **Related:** [SEG-02](#SEG-02)
 
 A run of bullet or ordered items — with indented continuation lines, and with the blank
@@ -1047,11 +1075,34 @@ lines of a loose list — is protected as a single range. Cutting between two it
 a truncated list in the prefix and asks the regeneration to resume a numbering it was
 never shown.
 
+A blank line ends the run only when what follows resumes neither the list nor the current
+item: `resumesList()` accepts the next item *or* an indented continuation. Checking only
+for the next item — the first version — flushed the range at the blank line before a
+loose item's own second paragraph, so cuts inside that paragraph became legal even though
+it still belongs to the item above.
+
 Cuts *at* the range's edges stay legal, because `isOffsetProtected()` compares strictly:
 before the list and after it are both fine. Only the inside is refused.
 
 A message that is mostly a list therefore offers few boundaries, or none. That is the
 same trade already made for fenced code, and the same message says so.
+
+<a id="SEG-09"></a>
+### SEG-09 — Links are protected in every form that resolves
+**Sites:** `src/segmentation.js` › `getProtectedRanges()` (`link`, `link-definition`)
+**Related:** [SEG-02](#SEG-02)
+
+Inline `[label](dest)`, full reference `[label][ref]`, collapsed `[label][]`, and the
+`[ref]: dest` definition line. A cut inside a label splits it from its destination, and a
+cut inside a definition leaves a dangling reference in text the model is asked to
+continue — neither renders as a link afterwards.
+
+The **shortcut** form — a bare `[label]` that resolves against a definition elsewhere —
+is deliberately *not* protected. It is indistinguishable from ordinary bracketed prose,
+and roleplay uses brackets constantly (`[OOC: ...]`, `[Note: ...]`). Protecting it would
+silently remove boundaries from any message that brackets anything, which is a large,
+invisible cost paid for a rare form. The consequence is stated rather than hidden: a
+shortcut reference can be cut.
 
 <a id="SEG-04"></a>
 ### SEG-04 — Sentence heuristics
@@ -1194,15 +1245,22 @@ keyboard to it.
 A failed or cancelled intercession keeps the user's response text so they can retry.
 
 <a id="UI-05"></a>
-### UI-05 — Drafts store offsets, not indices
-**Sites:** `src/ui/commit-flow.js` › `findDraftBoundaryIndex()`
+### UI-05 — Drafts are keyed by text, not by position
+**Sites:** `src/ui/commit-flow.js` › `draftKey()`, `findDraftBoundaryIndex()`; `src/ui/selection.js` › `resolveSelectionTarget()`
+**Related:** [UI-04](#UI-04), [UI-12](#UI-12)
 
 Drafts store the raw-text offset, which is stable across the two interfaces — they may
 filter their boundary lists differently, so a positional index would resolve to a
 different boundary depending on which interface reopened.
 
-> Draft keys are `chatId::targetIndex` with no source hash, so an edited message can
-> resurface a stale draft. Deferred, not fixed.
+The key is `chatId::targetIndex::sourceHash`. Position alone is not identity: a swipe, an
+edit, or a rollback puts different text at the same index, and the stored offset then
+points somewhere in text the user never saw — the draft would come back attached to a
+boundary that means nothing. Including the hash makes that case a miss, which loses a
+draft the user cannot use anyway, instead of restoring one onto the wrong message.
+
+`resolveSelectionTarget()` computes the hash once, next to the boundaries it belongs
+with, so both interfaces key drafts identically by construction.
 
 <a id="UI-06"></a>
 ### UI-06 — Foreign continuation metadata is surfaced, not blocked

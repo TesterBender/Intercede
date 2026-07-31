@@ -115,12 +115,87 @@ describe('emphasis protection', () => {
         expect(offersCutBefore(text, 'Then stop')).toBe(true);
     });
 
+    it('protects emphasis that opens inside a word', () => {
+        // CommonMark allows intraword emphasis with `*` (not with `_`), so this
+        // renders as emphasis and the sentence break inside it is not a cut.
+        const text = 'foo*First sentence. Second sentence*bar';
+        const ranges = getProtectedRanges(text);
+
+        expect(isOffsetProtected(text.indexOf(' Second'), ranges)).toBe(true);
+        expect(offsets(text)).toEqual([]);
+    });
+
+    it('treats an escaped delimiter as literal text, not as emphasis', () => {
+        const text = 'He said \\*not emphasis\\* aloud. Then he stopped.';
+        const ranges = getProtectedRanges(text);
+
+        expect(ranges.filter(range => range.kind === 'emphasis')).toEqual([]);
+        expect(offersCutBefore(text, 'Then he stopped')).toBe(true);
+    });
+
+    it('does not let an escaped delimiter close a span early', () => {
+        // The span runs to the final `*`; a cut after "one." is inside it.
+        const text = '*Escaped \\* here. Sentence one.* Sentence two.';
+        const ranges = getProtectedRanges(text);
+        const emphasis = ranges.filter(range => range.kind === 'emphasis');
+
+        expect(emphasis).toHaveLength(1);
+        expect(text.slice(emphasis[0].start, emphasis[0].end))
+            .toBe('*Escaped \\* here. Sentence one.*');
+        expect(isOffsetProtected(text.indexOf(' Sentence one.'), ranges)).toBe(true);
+    });
+
+    it('protects a bold-italic run to its last delimiter', () => {
+        const text = '***Both at once. And again.*** After the run.';
+        const ranges = getProtectedRanges(text);
+
+        expect(isOffsetProtected(text.indexOf(' And again'), ranges)).toBe(true);
+        // A `**` match alone would end here and leave the third asterisk adrift.
+        expect(isOffsetProtected(text.indexOf('*** After') + 2, ranges)).toBe(true);
+        // No cut is offered anywhere in this message: UAX #29 puts its breaks
+        // before the closing delimiters, and those offsets are all protected.
+        expect(offsets(text)).toEqual([]);
+    });
+
+    it('protects a span whose text ends in punctuation', () => {
+        const text = '**Stop! Now.** Then go.';
+        const ranges = getProtectedRanges(text);
+
+        expect(isOffsetProtected(text.indexOf(' Now.'), ranges)).toBe(true);
+    });
+
     it('does not let an unclosed delimiter swallow the rest of the message', () => {
         const text = 'He said *something odd.\n\nThen he left. She stayed.';
         const ranges = getProtectedRanges(text);
 
         expect(ranges.filter(range => range.kind === 'emphasis')).toEqual([]);
         expect(offersCutBefore(text, 'She stayed')).toBe(true);
+    });
+});
+
+describe('link protection', () => {
+    // @see docs/RATIONALE.md#SEG-09
+    it('protects an inline link', () => {
+        const text = 'See [the map. it helps](http://example.test/a). Then go.';
+
+        expect(isOffsetProtected(text.indexOf(' it helps'), getProtectedRanges(text))).toBe(true);
+        expect(offersCutBefore(text, 'Then go')).toBe(true);
+    });
+
+    it.each([
+        ['full reference', 'See [the map. it helps][map]. Then go.'],
+        ['collapsed reference', 'See [the map. it helps][]. Then go.'],
+    ])('protects a %s link', (_label, text) => {
+        expect(isOffsetProtected(text.indexOf(' it helps'), getProtectedRanges(text))).toBe(true);
+    });
+
+    it('protects a reference definition line', () => {
+        const text = 'Intro.\n\n[map]: http://example.test/a "A map. Of sorts."\n\nOutro.';
+        const ranges = getProtectedRanges(text).filter(range => range.kind === 'link-definition');
+
+        expect(ranges).toHaveLength(1);
+        expect(text.slice(ranges[0].start, ranges[0].end))
+            .toBe('[map]: http://example.test/a "A map. Of sorts."');
     });
 });
 
@@ -149,6 +224,18 @@ describe('list protection', () => {
 
         expect(ranges).toHaveLength(1);
         expect(text.slice(ranges[0].start, ranges[0].end)).toBe('- first\n\n- second');
+    });
+
+    it('keeps a continuation paragraph belonging to an item inside the run', () => {
+        // The blank line does not end the list: the indented paragraph below it
+        // is still part of the first item.
+        const text = '- First paragraph.\n\n  Continuation sentence. Another sentence.\n- Second item\n\nAfter.';
+        const ranges = getProtectedRanges(text).filter(range => range.kind === 'list');
+
+        expect(ranges).toHaveLength(1);
+        expect(text.slice(ranges[0].start, ranges[0].end))
+            .toBe('- First paragraph.\n\n  Continuation sentence. Another sentence.\n- Second item');
+        expect(isOffsetProtected(text.indexOf(' Another sentence'), getProtectedRanges(text))).toBe(true);
     });
 
     it('leaves the boundary at the edge of the list available', () => {

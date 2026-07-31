@@ -888,6 +888,15 @@ export async function cleanupSnapshots(ttlDays, ctx = getCtx()) {
     if (activeTransaction) {
         return { ok: false, removed: 0, reason: 'An intercession is in progress.' };
     }
+    if (recoveryRequired) {
+        // The latch means something is unresolved that the journal and metadata
+        // may no longer describe. Sweeping now could take the evidence with it.
+        return {
+            ok: false,
+            removed: 0,
+            reason: 'An interrupted intercession still needs review — run /intercede recover first.',
+        };
+    }
     return { ok: true, removed: await cleanupVault(ttlDays, liveVaultKeys(ctx)) };
 }
 
@@ -940,9 +949,19 @@ export async function finalizeIntercession() {
     }
 
     // 2. Record the decision durably, while the snapshot still exists.
+    //    The in-memory record is what canUndoTip() reads, so a failed save must
+    //    put it back: otherwise this session advertises no undo while the
+    //    snapshot it needs is still sitting in the vault, and only a reload
+    //    (which re-reads the unchanged metadata from disk) would recover it.
+    const before = structuredClone(stored);
     stored.finalizedAt = finalizedAt;
     delete stored.vaultKey;
-    await persistChatAndMetadata(ctx);
+    try {
+        await persistChatAndMetadata(ctx);
+    } catch (error) {
+        container.transactions[record.transactionId] = before;
+        throw error;
+    }
 
     // 3. Only now is the snapshot expendable.
     if (record.vaultKey) {

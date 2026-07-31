@@ -46,7 +46,7 @@ export function openOverlayMode(index = undefined) {
     buildOverlay({ ...target, boundaries });
 }
 
-function buildOverlay({ settings, raw, boundaries, targetIndex, chatId, message }) {
+function buildOverlay({ settings, raw, sourceHash, boundaries, targetIndex, chatId, message }) {
     const backdrop = el('div', 'intercede-backdrop');
     const panel = el('div', 'intercede-panel');
     panel.setAttribute('role', 'dialog');
@@ -150,12 +150,12 @@ function buildOverlay({ settings, raw, boundaries, targetIndex, chatId, message 
 
     overlayState = {
         backdrop, reader, sliceNodes, boundaryNodes, boundaries, raw,
-        targetIndex, chatId, message, settings, onKeydown,
+        targetIndex, chatId, message, settings, onKeydown, sourceHash,
         selectedIndex: null, composer: null,
     };
 
     // Restore a draft from a failed/cancelled attempt on this same message.
-    const draft = getDraft(chatId, targetIndex);
+    const draft = getDraft(overlayState);
     const draftIndex = findDraftBoundaryIndex(draft, boundaries);
     if (draftIndex !== null) {
         selectBoundary(draftIndex, draft);
@@ -188,7 +188,7 @@ function selectBoundary(index, draft = null) {
 
     const composer = buildComposer({
         state,
-        draft: draft ?? getDraft(state.chatId, state.targetIndex),
+        draft: draft ?? getDraft(state),
         onCommit: commitSelection,
         onCancel: () => {
             saveDraftFromState(overlayState);

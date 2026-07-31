@@ -51,6 +51,7 @@ export function openInlineMode(index = undefined) {
         message,
         settings: target.settings,
         raw,
+        sourceHash: target.sourceHash,
         boundaries,
         mesNode,
         mesTextNode,
@@ -109,7 +110,7 @@ export function openInlineMode(index = undefined) {
     document.addEventListener('mousedown', inlineState.onDocMousedown, true);
 
     // Restore a draft from a failed/cancelled attempt on this same message.
-    const draft = getDraft(inlineState.chatId, targetIndex);
+    const draft = getDraft(inlineState);
     const draftIndex = findDraftBoundaryIndex(draft, boundaries);
     if (draftIndex !== null && inlineState.markers.has(draftIndex)) {
         selectInlineBoundary(draftIndex, draft);
@@ -273,7 +274,7 @@ function selectInlineBoundary(index, draft = null) {
 
     const composer = buildComposer({
         state,
-        draft: draft ?? getDraft(state.chatId, state.targetIndex),
+        draft: draft ?? getDraft(state),
         variant: 'intercede-composer-inline',
         onCommit: commitInlineSelection,
         onCancel: () => {

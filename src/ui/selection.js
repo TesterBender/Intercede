@@ -13,7 +13,7 @@ import { REWRITE_MODES, REWRITE_MODE_LABELS } from '../constants.js';
 import { getBoundaries } from '../segmentation.js';
 import { getCtx, getCurrentChatId, getSettings } from '../stcontext.js';
 import { isEligibleTarget } from '../transaction.js';
-import { el, notify } from '../utils.js';
+import { el, hashText, notify } from '../utils.js';
 import { confirmAndCommit, setDraft } from './commit-flow.js';
 
 /**
@@ -24,6 +24,7 @@ import { confirmAndCommit, setDraft } from './commit-flow.js';
  * @property {object} message
  * @property {object} settings
  * @property {string} raw
+ * @property {string} sourceHash identity of `raw`, so a draft cannot land on other text
  * @property {{ offset: number, type: string }[]} boundaries
  * @property {number | null} selectedIndex
  * @property {HTMLElement | null} composer
@@ -62,6 +63,9 @@ export function resolveSelectionTarget(index = undefined) {
         targetIndex: eligible.targetIndex,
         message: eligible.message,
         raw,
+        // Identity of the text the boundaries were computed from.
+        // @see docs/RATIONALE.md#UI-05
+        sourceHash: hashText(raw),
         boundaries,
     };
 }
@@ -74,7 +78,7 @@ export function resolveSelectionTarget(index = undefined) {
 export function saveDraftFromState(state) {
     const textarea = state?.composer?.querySelector('textarea');
     if (!state || !textarea) return;
-    setDraft(state.chatId, state.targetIndex, {
+    setDraft(state, {
         text: textarea.value,
         mode: state.composer.querySelector('select')?.value,
         boundaryOffset: state.selectedIndex === null ? null : state.boundaries[state.selectedIndex]?.offset,
