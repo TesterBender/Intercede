@@ -1020,12 +1020,14 @@ const PARAGRAPH_SEPARATOR_REGEX = /\n[^\S\n]*(?:\n[^\S\n]*)+/g;
 The trailing `+` is load-bearing. With `*` in its place — which is what shipped through
 v0.5 — a single newline counted as a paragraph break, and two things followed:
 
-- `getBlocks()` degraded into a line-splitter, which defeated `insideOpenQuote()`. A
-  quotation spanning two lines was split across blocks, so neither half saw an odd
-  number of quote marks and a cut was offered *inside* the quote.
 - Paragraph granularity stopped meaning anything: on a message written with single
   newlines it offered a boundary at every line, which is sentence-ish behaviour under
   the wrong label.
+- `getBlocks()` degraded into a line-splitter, so quotation state was computed per line
+  rather than per paragraph. Under [SEG-10](#SEG-10) a cut inside a quotation is now
+  offered deliberately, so this no longer changes which boundaries appear — but the
+  block a risk is *assessed* against is still the paragraph, and a line-splitter would
+  assess the wrong text.
 
 A single newline is now a line break within a paragraph. It still yields a *sentence*
 boundary wherever a sentence actually ends there — `Intl.Segmenter` breaks after a line
@@ -1121,14 +1123,56 @@ silently remove boundaries from any message that brackets anything, which is a l
 invisible cost paid for a rare form. The consequence is stated rather than hidden: a
 shortcut reference can be cut.
 
+<a id="SEG-10"></a>
+### SEG-10 — Dialogue is offered, and the risk is reported
+**Sites:** `src/segmentation.js` › `BAD_SENTENCE_START_REGEX`, `describeCutRisks()`, `insideOpenQuote()`; `src/ui/commit-flow.js` › `confirmAndCommit()`
+**Related:** [SEG-04](#SEG-04), [SEG-02](#SEG-02), [UI-03](#UI-03)
+
+The first version refused any cut that sat inside a quotation, and any cut whose next
+sentence began with a quote mark. Both rules are defensible in the abstract and wrong for
+this product. Runtime testing on real roleplay made it obvious: in
+
+```text
+A small shrug inside the sweater. "It's not going to work like that."
+```
+
+*every* boundary a user would actually want was suppressed — the one before the dialogue,
+because the next sentence starts with `"`, and the ones inside it, because the quotation
+is open. Dialogue is the substance of roleplay, not an edge case, and an extension whose
+whole purpose is to respond *inside* a message cannot decline to cut where the talking
+happens.
+
+So the two filters moved rather than disappearing. The parser offers the boundary;
+`describeCutRisks()` inspects the preserved prefix and the confirmation screen says what
+the cut leaves dangling — an open quotation, an unclosed Markdown delimiter. The user
+decides.
+
+This is a deliberate asymmetry with [SEG-02](#SEG-02), and the distinction is what makes
+both coherent:
+
+- **Structure stays hard-protected.** Code fences, inline code, links, macros, HTML tags,
+  emphasis pairs, list runs: cutting these produces text that no longer *means* what it
+  says — a dangling `](`, half a macro, a list that renumbers itself.
+- **Style is advisory.** An open quotation still renders as text. It reads oddly, it is
+  usually not what the user wanted, and it is occasionally exactly what they wanted
+  (interrupting a speaker mid-sentence is a legitimate thing to do to a scene).
+
+Only the prefix's final block is assessed: anything before a blank line is closed as far
+as rendering is concerned. The risks are reported whenever the confirmation is shown, and
+they are not gated behind `warnExtensions` — that setting is about *other extensions*,
+while these describe this cut.
+
 <a id="SEG-04"></a>
 ### SEG-04 — Sentence heuristics
 **Sites:** `src/segmentation.js` › `segmentSentences()`, `ABBREVIATION_REGEX`, `BAD_SENTENCE_START_REGEX`, `insideOpenQuote()`
 
 `Intl.Segmenter` when available, a punctuation regex otherwise. A candidate is rejected
-when it follows an abbreviation or single initial, when the next sentence starts with
-continuation punctuation, a closing quote, or a lowercase letter, or when it sits inside
-an unfinished quotation.
+when it follows an abbreviation or single initial, or when the next sentence starts with
+continuation punctuation, a *closing* quote, or a lowercase letter — all of which mean the
+segmenter split something that was not a sentence.
+
+Opening quotes and unfinished quotations are no longer rejection reasons; see
+[SEG-10](#SEG-10) for why that filter moved from the parser to the confirmation.
 
 <a id="SEG-05"></a>
 ### SEG-05 — Deduplication prefers paragraphs

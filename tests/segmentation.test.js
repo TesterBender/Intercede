@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { getBoundaries, getProtectedRanges, isOffsetProtected, splitAtOffset } from '../src/segmentation.js';
+import { describeCutRisks, getBoundaries, getProtectedRanges, isOffsetProtected, splitAtOffset } from '../src/segmentation.js';
 
 /** Offsets only, for readability. */
 const offsets = (text, granularity = 'sentence') =>
@@ -54,14 +54,69 @@ describe('paragraph boundaries', () => {
         expect(offsets(text, 'paragraph')).toEqual([6]);
     });
 
-    it('keeps a single-newline message as one block, so its quote spans lines', () => {
-        // With a single newline as a separator this block would be split in two,
-        // each half seeing a balanced quote count, and the cut inside the
-        // quotation would be offered.
+    it('assesses a multi-line quotation as one block', () => {
+        // A line-splitter would judge the risk of a cut against half a
+        // paragraph. @see docs/RATIONALE.md#SEG-03
         const text = '"I never said that,\nand you know it," she snapped. He looked away.';
 
-        expect(offersCutBefore(text, 'and you know it')).toBe(false);
         expect(offersCutBefore(text, 'He looked away')).toBe(true);
+        // A single newline does not close the quotation: the risk is assessed
+        // across it, which a line-splitter would have missed.
+        const midQuote = text.slice(0, text.indexOf('and you know it'));
+        expect(describeCutRisks(midQuote)[0]).toMatch(/quotation/i);
+    });
+});
+
+describe('dialogue boundaries', () => {
+    // @see docs/RATIONALE.md#SEG-10
+    it('offers the boundary before an opening quotation', () => {
+        const text = 'A small shrug inside the sweater. "It\'s not going to work like that."';
+
+        expect(offersCutBefore(text, '"It\'s not going')).toBe(true);
+    });
+
+    it('offers boundaries inside dialogue', () => {
+        const text = '"Right now you don\'t have one. That\'s why people are nodding."';
+
+        expect(offersCutBefore(text, 'That\'s why')).toBe(true);
+    });
+
+    it('still refuses a boundary before a closing quote', () => {
+        // Here the segmenter breaks between the sentence and the quote mark that
+        // ends the speech; cutting there strands the delimiter in the rewrite.
+        const text = '"He said it plainly. I heard him." She looked away.';
+
+        expect(offersCutBefore(text, '" She looked')).toBe(false);
+        expect(offersCutBefore(text, 'She looked away')).toBe(true);
+    });
+
+    describe('cut risks', () => {
+        it('reports an open quotation', () => {
+            const risks = describeCutRisks('She turned. "This is not over.');
+
+            expect(risks).toHaveLength(1);
+            expect(risks[0]).toMatch(/quotation/i);
+        });
+
+        it('reports an unclosed emphasis delimiter', () => {
+            const risks = describeCutRisks('He froze. *She did not.');
+
+            expect(risks).toHaveLength(1);
+            expect(risks[0]).toMatch(/delimiter/i);
+        });
+
+        it('says nothing about a clean cut', () => {
+            expect(describeCutRisks('She turned. *"This is over,"* he said.')).toEqual([]);
+        });
+
+        it('ignores an escaped delimiter', () => {
+            expect(describeCutRisks('The price is 5 \\* 3 dollars.')).toEqual([]);
+        });
+
+        it('only assesses the last paragraph', () => {
+            // The quotation two paragraphs up is somebody else's problem.
+            expect(describeCutRisks('"An open quote\n\nA clean closing paragraph.')).toEqual([]);
+        });
     });
 });
 

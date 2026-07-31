@@ -6,7 +6,7 @@
 
 import { createAnchor } from '../anchors.js';
 import { REWRITE_MODE_LABELS } from '../constants.js';
-import { splitAtOffset } from '../segmentation.js';
+import { describeCutRisks, splitAtOffset } from '../segmentation.js';
 import { getCtx } from '../stcontext.js';
 import { getChainPosition, IntercedeTransaction } from '../transaction.js';
 import { el, hashText, notify, truncate } from '../utils.js';
@@ -96,7 +96,10 @@ export async function confirmAndCommit({ chatId, targetIndex, raw, boundary, ins
 
     if (settings.confirmBeforeCommit) {
         const ctx = getCtx();
-        const warnings = [];
+        // Structural risks are always reported: they describe this cut, not the
+        // environment, and the parser now offers cuts it used to hide.
+        // @see docs/RATIONALE.md#SEG-10
+        const warnings = describeCutRisks(prefix);
         if (settings.warnExtensions) {
             const foreign = detectForeignContinuationData(message);
             if (foreign.length) {

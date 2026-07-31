@@ -161,7 +161,11 @@ the re-validation above. A small console API is exposed at `window.Intercede`.
   newest-first; an earlier link cannot be undone without undoing the ones above it.
 - Undo snapshots are stored in this browser's storage and do not travel with exported chats
   (deliberate: no invisible chat-file inflation).
-- No cutting inside code fences, inline code, HTML tags, macros, unfinished quotes, paired
+- Dialogue is cuttable. Boundaries are offered before an opening quotation and between
+  sentences inside one, because that is where roleplay usually wants to answer. If a cut
+  leaves a quotation open or a Markdown delimiter unclosed, the confirmation screen says
+  so — the decision is yours rather than the parser's.
+- No cutting inside code fences, inline code, HTML tags, macros, paired
   Markdown emphasis (`**bold**`, `_italic_`, `~~strike~~`, including intraword `*em*` and
   escaped delimiters), a run of list items, or links — inline, reference (`[a][b]`,
   `[a][]`) and definition lines. The one link form left unprotected is the shortcut
