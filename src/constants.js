@@ -31,16 +31,16 @@ export const REWRITE_MODE_LABELS = Object.freeze({
 });
 
 export const TX_STATE = Object.freeze({
-    IDLE: 'idle',
-    SELECTING: 'selecting',
     ARMED: 'armed',
     SNAPSHOTTED: 'snapshotted',
     MUTATED: 'mutated',
     GENERATING: 'generating',
     VALIDATING: 'validating',
+    COMMITTING: 'committing',
     COMMITTED: 'committed',
     ROLLING_BACK: 'rolling-back',
     ROLLED_BACK: 'rolled-back',
+    RECOVERY_REQUIRED: 'recovery-required',
 });
 
 /** Journal stage names (subset of the transaction lifecycle, written before/after risky steps). */
@@ -51,9 +51,22 @@ export const JOURNAL_STAGE = Object.freeze({
     USER_INSERTED: 'user-inserted',
     GENERATION_STARTED: 'generation-started',
     GENERATION_RETURNED: 'generation-returned',
+    COMMITTING: 'committing',
     COMMITTED: 'committed',
     ROLLED_BACK: 'rolled-back',
+    /** Ownership could not be proven. No automatic destructive action is allowed. */
+    RECOVERY_REQUIRED: 'recovery-required',
 });
+
+/**
+ * Stages after which the transaction owns nothing further, so a new journal may
+ * replace the record. Every other stage means an interrupted transaction whose
+ * evidence must survive.
+ */
+export const TERMINAL_JOURNAL_STAGES = Object.freeze([
+    JOURNAL_STAGE.COMMITTED,
+    JOURNAL_STAGE.ROLLED_BACK,
+]);
 
 /** Custom events emitted through the SillyTavern eventSource for other extensions. */
 export const INTERCEDE_EVENTS = Object.freeze({
@@ -78,9 +91,12 @@ export const DEFAULT_SETTINGS = Object.freeze({
     defaultMode: REWRITE_MODES.ADAPTIVE,
     confirmBeforeCommit: true,
     compareAfterCommit: false,
-    keepSnapshots: true,
-    /** 0 = keep snapshots indefinitely. */
-    snapshotTtlDays: 30,
+    /**
+     * 0 = keep snapshots indefinitely (the default: an undo snapshot must never
+     * disappear on its own). Age cleanup, when enabled, still refuses to delete
+     * a committed snapshot that has not been explicitly finalized.
+     */
+    snapshotTtlDays: 0,
     showButton: true,
     warnExtensions: true,
 });

@@ -61,7 +61,8 @@ SillyTavern/public/scripts/extensions/third-party/Intercede
 | `/intercede undo` | Undo the committed intercession at the chat tail |
 | `/intercede compare` | Show the original/revised comparison |
 | `/intercede recover` | Run crash-recovery for an interrupted intercession |
-| `/intercede cleanup` | Delete undo snapshots older than the configured age |
+| `/intercede finalize` | Delete the undo snapshot for the intercession at the chat tail (messages stay) |
+| `/intercede cleanup` | Delete unused undo snapshots older than the configured age |
 
 ## Safety model
 
@@ -76,12 +77,28 @@ Interceding mutates canonical history, so every operation runs as a transaction:
   notes so backend ToS filters don't mistake it for output-reuse) is installed only from
   inside a matching `GENERATION_STARTED` handler and cleared on every generation end, stop, chat
   change, and in `finally`. It cannot leak into summaries, quiet prompts, or later requests.
-- **Validation** — after generation the chat tail is structurally verified (roles, prefix
-  integrity, non-empty continuation). Structural corruption rolls back; stylistic issues
-  (prefix repetition, ignored insertion, meta-commentary) only warn.
-- **Recovery journal** — a synchronous localStorage journal is written around every risky
-  step. After a reload or crash, Intercede offers to restore the original message; it never
-  deletes a message it cannot prove belongs to the interrupted transaction.
+- **Proven ownership** — the revised continuation is identified by the message event that
+  announces it, not by its position afterwards, and every message the transaction created
+  is tagged with the transaction's id. Nothing is rewritten or deleted on position alone.
+  If another extension adds a message while Intercede is generating, the intercession fails
+  and rolls back instead of adopting that message as its continuation.
+- **Validation** — after generation the three messages are verified against captured
+  ownership (identity, markers, roles, prefix integrity, non-empty continuation), and
+  verified *again* after `intercede_before_commit` in case a listener changed history.
+  Structural corruption rolls back; stylistic issues (prefix repetition, ignored insertion,
+  meta-commentary) only warn.
+- **Selective rollback** — rollback removes only the messages the transaction can prove it
+  created, newest first, and restores the original message from the snapshot. It never
+  truncates the chat by length. If ownership cannot be proven, it stops, deletes nothing,
+  keeps the journal and snapshot, and asks you what to do.
+- **Recovery journal** — a synchronous localStorage journal is written and read back around
+  every risky step; if it cannot be verified, the intercession aborts before any message is
+  changed. After a reload or crash, Intercede offers to restore the original message; it
+  never deletes a message it cannot prove belongs to the interrupted transaction.
+- **Undo that is really there** — the Undo and Compare buttons appear only once the
+  snapshot behind them has been confirmed present, and automatic snapshot cleanup never
+  deletes a snapshot that can still be undone. `/intercede finalize` discards one on
+  purpose.
 - **Display-hidden text is respected** — regex scripts set to *Alter Chat Display* can hide
   parts of the raw message (e.g. stripping a model's `<response_consideration>` planning
   block at render time). Intercede classifies every candidate cut against an offscreen
@@ -96,9 +113,12 @@ Interceding mutates canonical history, so every operation runs as a transaction:
   one was cut from and leaves every earlier link undoable.
 
 Custom events (`intercede_before_commit`, `intercede_committed`, `intercede_rolled_back`,
-`intercede_undone`, `intercede_invalidated`) are emitted through the SillyTavern
-`eventSource` so memory/summary/timeline extensions can invalidate derived state. A small
-console API is exposed at `window.Intercede`.
+`intercede_undone`) are emitted through the SillyTavern `eventSource` so
+memory/summary/timeline extensions can invalidate derived state. `intercede_invalidated`
+is declared but not yet emitted — do not subscribe to it expecting it to fire. Note that
+`intercede_before_commit` is informational: listeners cannot veto a commit, and any
+history they change is detected by the re-validation above. A small console API is exposed
+at `window.Intercede`.
 
 ## Limitations (v0.5)
 
@@ -110,7 +130,27 @@ console API is exposed at `window.Intercede`.
 - Undo snapshots are stored in this browser's storage and do not travel with exported chats
   (deliberate: no invisible chat-file inflation).
 - No cutting inside code fences, inline code, links, HTML tags, macros, or unfinished quotes
-  (deliberate: those boundaries are unsafe).
+  (deliberate: those boundaries are unsafe). Paired Markdown emphasis (`**bold**`,
+  `_italic_`, `~~strike~~`) is **not** yet protected, and paragraph mode currently offers a
+  boundary at any line break rather than only at blank lines — both are known and queued.
+- An intercession that another extension disturbs mid-generation is rolled back rather than
+  repaired. That is deliberate: the alternative is guessing which messages are whose.
+
+## Development
+
+There is no build step — SillyTavern loads `index.js` directly, and the tooling below is
+for contributors only.
+
+```
+npm install
+npm run check     # eslint + vitest
+```
+
+Tests run in jsdom against a fake `SillyTavern.getContext()` (`tests/helpers/fake-context.js`)
+and assert exact final chat state, since the failures worth catching here are the ones that
+still "succeed". The event name and payload used to capture the generated continuation are
+the only version-coupled assumption; they live in `src/generation-capture.js` and are
+recorded in the tests.
 
 ## Module map
 
@@ -123,7 +163,10 @@ src/anchors.js               source-anchored cuts (hashes + context, rebase-or-a
 src/vault.js                 discarded-suffix vault (localforage) + recovery journal
 src/prompt.js                the one-generation suffix-revision instruction
 src/lease.js                 generation lease + swipe/regenerate re-leasing
-src/validator.js             structural validation + quality heuristics + overlap metrics
+src/ownership.js             per-message ownership markers and chain provenance
+src/generation-capture.js    identifies the generated continuation by event, not position
+src/errors.js                RecoveryRequiredError and friends
+src/validator.js             ownership-proving validation + quality heuristics + overlap
 src/transaction.js           the atomic transaction: snapshot → mutate → generate →
                              validate → commit / rollback; undo; journal recovery
 src/events.js                custom Intercede events

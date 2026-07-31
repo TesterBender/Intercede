@@ -6,7 +6,7 @@
  */
 
 import { getCtx, getEventSource, getEventTypes, getSettings } from '../stcontext.js';
-import { getCommittedTipRecord, isEligibleTarget, undoIntercession } from '../transaction.js';
+import { canUndoTip, getCommittedTipRecord, isEligibleTarget, undoIntercession } from '../transaction.js';
 import { debounce, notify } from '../utils.js';
 import { showCompare } from './compare.js';
 import { showConfirm } from './modal.js';
@@ -44,10 +44,40 @@ export function refreshButtonVisibility() {
                 : 'Intercede — respond inside this message (Alt+I)';
         }
     }
+    // Undo and Compare both need the vault snapshot, not just the metadata
+    // record that names it (INV-10). That check is asynchronous, so the result
+    // is cached per transaction and the buttons appear once it confirms —
+    // better a brief delay than a control that fails when clicked.
     const record = getCommittedTipRecord(ctx);
     if (record && Array.isArray(ctx?.chat)) {
-        document.querySelector(`#chat .mes[mesid="${ctx.chat.length - 1}"]`)?.classList.add('intercede-committed');
+        if (undoAvailability.transactionId === record.transactionId) {
+            if (undoAvailability.available) {
+                document.querySelector(`#chat .mes[mesid="${ctx.chat.length - 1}"]`)?.classList.add('intercede-committed');
+            }
+        } else {
+            verifyUndoAvailability(record.transactionId);
+        }
     }
+}
+
+/** Cached answer to "can the tail actually be undone?", keyed by transaction. */
+let undoAvailability = { transactionId: null, available: false };
+let pendingVerification = null;
+
+async function verifyUndoAvailability(transactionId) {
+    if (pendingVerification === transactionId) return;
+    pendingVerification = transactionId;
+
+    let available = false;
+    try {
+        available = await canUndoTip();
+    } catch {
+        available = false;
+    }
+
+    pendingVerification = null;
+    undoAvailability = { transactionId, available };
+    refreshButtonVisibility();
 }
 
 export const refreshButtonVisibilityDebounced = debounce(refreshButtonVisibility, 250);

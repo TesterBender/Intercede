@@ -6,50 +6,77 @@
  * ambiguous prose is shown to the user, never silently rejected or rewritten.
  */
 
+import { isOwnedMessage, OWNED_ROLE } from './ownership.js';
 import { normalizeForComparison } from './utils.js';
 
 /**
- * Structural validation of the chat tail after generation.
+ * Structural validation against proven ownership (§5.4, INV-02/INV-03/INV-04).
+ *
+ * Every message is checked twice: the object reference the transaction captured
+ * must still be where it belongs, and its marker must still name this
+ * transaction. An unexpected chat length is fatal, not a warning — the previous
+ * behaviour let a foreign message be adopted as the continuation.
+ *
  * @param {object} params
  * @param {Array} params.chat
- * @param {number} params.targetIndex
+ * @param {object} params.ownership from createOwnership(), with refs populated
  * @param {string} params.prefix
  * @param {string} params.insertion
- * @returns {{ ok: boolean, fatal: string[], warnings: string[] }}
+ * @returns {{ ok: boolean, fatal: string[], warnings: string[], suffixMessage: object | null }}
  */
-export function validateStructure({ chat, targetIndex, prefix, insertion }) {
+export function validateOwnedStructure({ chat, ownership, prefix, insertion }) {
     const fatal = [];
     const warnings = [];
-    const expectedLength = targetIndex + 3;
 
-    const prefixMessage = chat[targetIndex];
-    const userMessage = chat[targetIndex + 1];
-    const tip = chat[chat.length - 1];
-
-    if (!prefixMessage || prefixMessage.is_user || prefixMessage.mes !== prefix) {
-        fatal.push('The preserved prefix message no longer matches the transaction.');
+    if (chat.length !== ownership.expectedChatLength) {
+        fatal.push(
+            `Expected exactly ${ownership.expectedChatLength} messages after generation but found ${chat.length} — another extension changed the chat during this intercession.`,
+        );
     }
-    if (!userMessage || !userMessage.is_user) {
-        fatal.push('The inserted user message is missing.');
+
+    const prefixMessage = chat[ownership.prefixIndex];
+    const userMessage = chat[ownership.insertionIndex];
+    const suffixMessage = chat[ownership.expectedSuffixIndex];
+
+    if (prefixMessage !== ownership.prefixRef
+        || !isOwnedMessage(prefixMessage, ownership.transactionId, OWNED_ROLE.PREFIX)
+        || prefixMessage?.is_user) {
+        fatal.push('The preserved prefix is no longer the message this intercession cut.');
+    } else if (prefixMessage.mes !== prefix) {
+        fatal.push('The preserved prefix text was changed during generation.');
+    }
+
+    if (userMessage !== ownership.insertionRef
+        || !isOwnedMessage(userMessage, ownership.transactionId, OWNED_ROLE.INSERTION)
+        || !userMessage?.is_user) {
+        fatal.push('The inserted user message is missing or no longer belongs to this intercession.');
     } else if (normalizeForComparison(userMessage.mes) !== normalizeForComparison(insertion)) {
         warnings.push('The inserted user message text was transformed (macros or bias may have applied).');
     }
-    if (chat.length < expectedLength) {
-        fatal.push('No revised continuation was generated.');
-    } else {
-        if (!tip || tip.is_user) {
-            fatal.push('The generated continuation is not an assistant message.');
-        } else if (tip.is_system) {
-            fatal.push('The generated continuation is a system message.');
-        } else if (!String(tip.mes ?? '').trim()) {
-            fatal.push('The generated continuation is empty.');
-        }
-        if (chat.length > expectedLength) {
-            warnings.push(`Expected ${expectedLength} messages but found ${chat.length} — another extension may have added messages.`);
-        }
+
+    if (ownership.suffixIndex === null) {
+        fatal.push('No revised continuation was captured.');
+    } else if (ownership.suffixIndex !== ownership.expectedSuffixIndex) {
+        fatal.push(
+            `The revised continuation is at index ${ownership.suffixIndex} but this intercession expected index ${ownership.expectedSuffixIndex}.`,
+        );
+    } else if (suffixMessage !== ownership.suffixRef
+        || !isOwnedMessage(suffixMessage, ownership.transactionId, OWNED_ROLE.SUFFIX_PENDING)) {
+        fatal.push('The revised continuation is missing or no longer belongs to this intercession.');
+    } else if (suffixMessage.is_user) {
+        fatal.push('The generated continuation is not an assistant message.');
+    } else if (suffixMessage.is_system) {
+        fatal.push('The generated continuation is a system message.');
+    } else if (!String(suffixMessage.mes ?? '').trim()) {
+        fatal.push('The generated continuation is empty.');
     }
 
-    return { ok: fatal.length === 0, fatal, warnings };
+    return {
+        ok: fatal.length === 0,
+        fatal,
+        warnings,
+        suffixMessage: fatal.length === 0 ? suffixMessage : null,
+    };
 }
 
 /**

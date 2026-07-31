@@ -60,6 +60,50 @@ export async function saveMetadata(ctx = getCtx()) {
     }
 }
 
+/**
+ * Persist chat and metadata exactly once each.
+ *
+ * saveMetadata() above falls back to saveChat(), so calling both in sequence can
+ * save the chat twice. Callers that have already saved the chat use this
+ * instead, which makes the second call a no-op when the host has no separate
+ * metadata save.
+ */
+export async function persistChatAndMetadata(ctx = getCtx()) {
+    if (!ctx) throw new Error('SillyTavern context unavailable.');
+    await ctx.saveChat();
+    if (typeof ctx.saveMetadata === 'function') {
+        await ctx.saveMetadata();
+    }
+}
+
+/**
+ * Remove a single message and keep the rendered chat consistent with the array.
+ *
+ * Prefers the host's own deletion (which reindexes and notifies other
+ * extensions). The fallback splices and reprints, because removing a DOM node
+ * by `mesid` only stays coherent when deleting strictly from the tail.
+ */
+export async function deleteMessageAt(ctx, index) {
+    if (typeof ctx.deleteMessage === 'function') {
+        await ctx.deleteMessage(index);
+        return;
+    }
+
+    ctx.chat.splice(index, 1);
+
+    if (typeof ctx.printMessages === 'function') {
+        ctx.printMessages();
+        return;
+    }
+
+    document.querySelector('#chat')?.replaceChildren();
+    ctx.chat.forEach((message, messageIndex) => {
+        try {
+            ctx.addOneMessage(message, { forceId: messageIndex, scroll: false });
+        } catch { /* rendering is best-effort; canonical state is already correct */ }
+    });
+}
+
 /** Persistent extension settings (extension_settings.intercede), with defaults applied. */
 export function getSettings(ctx = getCtx()) {
     const store = ctx?.extensionSettings ?? ctx?.extension_settings;
@@ -132,7 +176,20 @@ export function checkCapabilities() {
     for (const name of required) {
         if (ctx[name] === undefined) missing.push(name);
     }
-    if (!Object.keys(getEventTypes(ctx)).length) missing.push('eventTypes');
+    // Naming the events we actually depend on, rather than checking that the
+    // map is merely non-empty: a host missing the assistant-message event
+    // cannot support ownership capture, and must not start a transaction.
+    const eventTypes = getEventTypes(ctx);
+    if (!Object.keys(eventTypes).length) {
+        missing.push('eventTypes');
+    } else {
+        for (const name of ['GENERATION_STARTED', 'GENERATION_ENDED', 'CHAT_CHANGED']) {
+            if (!eventTypes[name]) missing.push(`eventTypes.${name}`);
+        }
+        if (!eventTypes.MESSAGE_RECEIVED && !eventTypes.CHARACTER_MESSAGE_RENDERED) {
+            missing.push('eventTypes.MESSAGE_RECEIVED (or CHARACTER_MESSAGE_RENDERED)');
+        }
+    }
 
     const optional = ['sendMessageAsUser', 'saveMetadata', 'SlashCommandParser', 'stopGeneration', 'substituteParams'];
     for (const name of optional) {

@@ -87,7 +87,6 @@ export function notify(kind, message, options = {}) {
     if (toastr && typeof toastr[kind] === 'function') {
         toastr[kind](message, TOAST_TITLE, { timeOut: kind === 'error' ? 10000 : 5000, ...options });
     } else {
-        // eslint-disable-next-line no-console
         console[kind === 'error' ? 'error' : 'log'](`[${TOAST_TITLE}] ${message}`);
     }
 }

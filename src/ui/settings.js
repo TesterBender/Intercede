@@ -52,14 +52,16 @@ const PANEL_HTML = `
                 <input type="checkbox" id="intercede_warn_extensions">
                 <span>Warn about continuation/memory extension conflicts</span>
             </label>
-            <label for="intercede_snapshot_ttl">Delete undo snapshots after (days, 0 = keep forever)</label>
+            <label for="intercede_snapshot_ttl">Delete unused undo snapshots after (days, 0 = keep forever)</label>
             <input type="number" id="intercede_snapshot_ttl" class="text_pole" min="0" max="3650" step="1">
             <div class="intercede-settings-actions">
                 <button type="button" id="intercede_cleanup_now" class="menu_button">Clean up stored snapshots now</button>
             </div>
             <small class="intercede-settings-note">
                 Intercede works on the latest completed assistant message. Snapshots for undo are stored
-                locally in this browser and do not travel with exported chat files.
+                locally in this browser and do not travel with exported chat files. Cleanup never removes
+                the snapshot behind an intercession that can still be undone — use
+                <code>/intercede finalize</code> to discard that one deliberately.
             </small>
         </div>
     </div>
@@ -105,7 +107,7 @@ export function initSettingsPanel() {
     }
 
     const ttl = byId('intercede_snapshot_ttl');
-    ttl.value = String(settings.snapshotTtlDays ?? 30);
+    ttl.value = String(settings.snapshotTtlDays ?? 0);
     ttl.addEventListener('change', () => {
         const value = Math.max(0, Number(ttl.value) || 0);
         ttl.value = String(value);

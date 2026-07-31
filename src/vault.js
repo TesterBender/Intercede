@@ -10,7 +10,7 @@
  * recovered on the next load.
  */
 
-import { JOURNAL_KEY, SCHEMA_VERSION, VAULT_PREFIX } from './constants.js';
+import { JOURNAL_KEY, SCHEMA_VERSION, TERMINAL_JOURNAL_STAGES, VAULT_PREFIX } from './constants.js';
 import { getStorageBackend } from './stcontext.js';
 
 let store = null;
@@ -42,11 +42,54 @@ export function vaultKeyFor(chatId, transactionId) {
  * @property {string} [revisedSuffix] filled in at commit
  */
 
+/**
+ * Best-effort write, used where a failure is not worth aborting for (enriching
+ * an already-committed record). The cache is still only populated after the
+ * durable write resolves.
+ */
 export async function vaultPut(key, record) {
     const value = { schemaVersion: SCHEMA_VERSION, ...record };
-    cache.set(key, value);
     await getStore().setItem(key, value);
+    cache.set(key, value);
     return value;
+}
+
+/**
+ * Durable write with round-trip verification (§7.3, INV-07).
+ *
+ * Order matters. The cache must never be populated before the backend confirms,
+ * or a quota failure leaves a phantom record that reads as present until the
+ * page is reloaded — at which point the snapshot the user was promised is gone.
+ * A backend that resolves without persisting is caught by reading the value
+ * back.
+ */
+export async function vaultPutStrict(key, record) {
+    const value = { schemaVersion: SCHEMA_VERSION, ...record };
+
+    let roundTrip = null;
+    try {
+        await getStore().setItem(key, value);
+        roundTrip = await getStore().getItem(key);
+    } catch (error) {
+        cache.delete(key);
+        throw new Error(`Snapshot vault write failed: ${error?.message ?? error}`);
+    }
+
+    if (!roundTrip
+        || roundTrip.transactionId !== value.transactionId
+        || roundTrip.schemaVersion !== value.schemaVersion) {
+        cache.delete(key);
+        throw new Error('Snapshot vault verification failed: the record could not be read back.');
+    }
+
+    cache.set(key, roundTrip);
+    return roundTrip;
+}
+
+/** Delete that reports failure instead of swallowing it. */
+export async function vaultDeleteStrict(key) {
+    await getStore().removeItem(key);
+    cache.delete(key);
 }
 
 export async function vaultGet(key) {
@@ -83,6 +126,11 @@ export async function vaultKeys() {
 
 /**
  * Delete vault records older than ttlDays. ttlDays <= 0 keeps everything.
+ *
+ * A committed record that has not been explicitly finalized is the only copy of
+ * the message Undo restores, so age alone must never remove it (IC-P1-004,
+ * INV-10). Use finalizeVaultRecord() to give up undo deliberately.
+ *
  * @returns {Promise<number>} number of records removed
  */
 export async function cleanupVault(ttlDays) {
@@ -91,12 +139,19 @@ export async function cleanupVault(ttlDays) {
     let removed = 0;
     for (const key of await vaultKeys()) {
         const record = await vaultGet(key);
-        if (record?.createdAt && record.createdAt < cutoff) {
-            await vaultDelete(key);
-            removed++;
-        }
+        if (!record?.createdAt || record.createdAt >= cutoff) continue;
+        if (record.state === 'committed' && !record.finalizedAt) continue;
+
+        await vaultDelete(key);
+        removed++;
     }
     return removed;
+}
+
+/** True when the snapshot behind a committed transaction is still available. */
+export async function vaultRecordExists(key) {
+    if (!key) return false;
+    return Boolean(await vaultGet(key));
 }
 
 // ---------------------------------------------------------------------------
@@ -139,4 +194,69 @@ export function clearJournal() {
     try {
         localStorage.removeItem(JOURNAL_KEY);
     } catch { /* ignore */ }
+}
+
+// --- Strict variants, used on every path that precedes canonical mutation ----
+//
+// The journal is the only thing standing between a crash mid-transaction and an
+// unrecoverable chat. A write that silently failed is worse than no journal at
+// all, because the transaction proceeds believing it is protected. These throw.
+
+/** True when this entry represents a transaction that still owns chat state. */
+function isUnrecovered(entry) {
+    return Boolean(entry) && !TERMINAL_JOURNAL_STAGES.includes(entry.stage);
+}
+
+/**
+ * Write the journal, verifying it can be read back.
+ *
+ * There is a single journal slot for the whole application, so starting a
+ * transaction would otherwise destroy an unrecovered record belonging to a
+ * different chat and make that chat unrecoverable. Refuse instead — the caller
+ * aborts before touching any message.
+ */
+export function writeJournalStrict(entry) {
+    const existing = readJournal();
+    if (isUnrecovered(existing) && existing.transactionId !== entry.transactionId) {
+        throw new Error(
+            `An unrecovered intercession (${existing.stage}) from chat "${existing.chatId}" is still journaled. Recover or dismiss it before starting another.`,
+        );
+    }
+
+    const serialized = JSON.stringify(entry);
+    try {
+        localStorage.setItem(JOURNAL_KEY, serialized);
+    } catch (error) {
+        throw new Error(`Recovery journal could not be written: ${error?.message ?? error}`);
+    }
+
+    if (localStorage.getItem(JOURNAL_KEY) !== serialized) {
+        throw new Error('Recovery journal verification failed.');
+    }
+}
+
+export function updateJournalStrict(patch) {
+    const current = readJournal();
+    if (!current) {
+        throw new Error('Recovery journal is missing — the transaction can no longer prove its state.');
+    }
+
+    const next = { ...current, ...patch };
+    const serialized = JSON.stringify(next);
+    try {
+        localStorage.setItem(JOURNAL_KEY, serialized);
+    } catch (error) {
+        throw new Error(`Recovery journal could not be updated: ${error?.message ?? error}`);
+    }
+
+    if (localStorage.getItem(JOURNAL_KEY) !== serialized) {
+        throw new Error('Recovery journal verification failed.');
+    }
+}
+
+export function clearJournalStrict() {
+    localStorage.removeItem(JOURNAL_KEY);
+    if (localStorage.getItem(JOURNAL_KEY) !== null) {
+        throw new Error('Recovery journal could not be cleared.');
+    }
 }

@@ -18,9 +18,10 @@ import {
     getEventTypes,
     getSettings,
 } from './src/stcontext.js';
-import { checkRecovery, undoIntercession } from './src/transaction.js';
+import { checkRecovery, finalizeIntercession, undoIntercession } from './src/transaction.js';
 import { showCompare } from './src/ui/compare.js';
 import { initMessageButtons, refreshButtonVisibilityDebounced } from './src/ui/message-button.js';
+import { showConfirm } from './src/ui/modal.js';
 import { closeAllModes, openIntercede } from './src/ui/open.js';
 import { initSettingsPanel } from './src/ui/settings.js';
 import { notify, waitUntil } from './src/utils.js';
@@ -44,6 +45,18 @@ async function handleSlashCommand(action) {
         case 'recover':
             await checkRecovery();
             return '';
+        case 'finalize': {
+            const confirmed = await showConfirm(
+                'Finalize intercession?',
+                'The undo snapshot for the intercession at the end of this chat will be deleted permanently. The messages stay exactly as they are, but Undo and Compare will no longer be available for it.',
+                { confirmLabel: 'Delete snapshot', cancelLabel: 'Keep it' },
+            );
+            if (!confirmed) return '';
+            const result = await finalizeIntercession();
+            if (!result.ok) notify('warning', result.reason);
+            refreshButtonVisibilityDebounced();
+            return '';
+        }
         case 'cleanup': {
             const days = getSettings().snapshotTtlDays;
             const removed = days > 0 ? await cleanupVault(days) : 0;
@@ -54,7 +67,7 @@ async function handleSlashCommand(action) {
             return '';
         }
         default:
-            notify('warning', `Unknown /intercede action "${action}". Use: undo, compare, recover, cleanup.`);
+            notify('warning', `Unknown /intercede action "${action}". Use: undo, compare, recover, finalize, cleanup.`);
             return '';
     }
 }
@@ -66,7 +79,7 @@ function registerSlashCommands(ctx) {
             const unnamedArgumentList = [];
             if (SlashCommandArgument?.fromProps) {
                 unnamedArgumentList.push(SlashCommandArgument.fromProps({
-                    description: 'action: undo | compare | recover | cleanup (empty opens boundary selection)',
+                    description: 'action: undo | compare | recover | finalize | cleanup (empty opens boundary selection)',
                     typeList: ARGUMENT_TYPE ? [ARGUMENT_TYPE.STRING] : undefined,
                     isRequired: false,
                 }));
@@ -75,7 +88,7 @@ function registerSlashCommands(ctx) {
                 name: 'intercede',
                 callback: (_namedArgs, value) => handleSlashCommand(value),
                 unnamedArgumentList,
-                helpString: 'Respond inside the latest completed assistant message. Actions: <code>undo</code>, <code>compare</code>, <code>recover</code>, <code>cleanup</code>.',
+                helpString: 'Respond inside the latest completed assistant message. Actions: <code>undo</code>, <code>compare</code>, <code>recover</code>, <code>finalize</code>, <code>cleanup</code>.',
             }));
             return;
         }
@@ -84,7 +97,7 @@ function registerSlashCommands(ctx) {
                 'intercede',
                 (_namedArgs, value) => handleSlashCommand(value),
                 [],
-                '<span class="monospace">(undo | compare | recover | cleanup)</span> – respond inside the latest assistant message',
+                '<span class="monospace">(undo | compare | recover | finalize | cleanup)</span> – respond inside the latest assistant message',
                 true,
                 true,
             );
