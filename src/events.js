@@ -1,7 +1,6 @@
 /**
- * Custom Intercede events (§15) — emitted through the shared SillyTavern
- * eventSource so memory, summary, timeline, and analytics extensions can
- * invalidate derived state after a history rewrite.
+ * Custom Intercede events (§15).
+ * @see docs/RATIONALE.md#CFG-02 the contract, and the unemitted event
  */
 
 import { INTERCEDE_EVENTS } from './constants.js';

@@ -1,10 +1,6 @@
 /**
  * Access layer for the SillyTavern client context.
- *
- * Everything goes through SillyTavern.getContext() rather than importing internal
- * client modules, per the official extension guidance. Names that have shifted
- * between releases (eventTypes/event_types, extensionPromptTypes/…) are resolved
- * here with fallbacks so the rest of the extension can stay clean.
+ * @see docs/RATIONALE.md#HOST-01 why nothing imports internal client modules
  */
 
 import { DEFAULT_SETTINGS, MODULE_NAME } from './constants.js';
@@ -60,6 +56,43 @@ export async function saveMetadata(ctx = getCtx()) {
     }
 }
 
+/**
+ * Persist chat and metadata exactly once each.
+ * @see docs/RATIONALE.md#HOST-02 the double-save this avoids
+ */
+export async function persistChatAndMetadata(ctx = getCtx()) {
+    if (!ctx) throw new Error('SillyTavern context unavailable.');
+    await ctx.saveChat();
+    if (typeof ctx.saveMetadata === 'function') {
+        await ctx.saveMetadata();
+    }
+}
+
+/**
+ * Remove a single message and keep the rendered chat consistent with the array.
+ * @see docs/RATIONALE.md#HOST-03 why the fallback reprints instead of removing a node
+ */
+export async function deleteMessageAt(ctx, index) {
+    if (typeof ctx.deleteMessage === 'function') {
+        await ctx.deleteMessage(index);
+        return;
+    }
+
+    ctx.chat.splice(index, 1);
+
+    if (typeof ctx.printMessages === 'function') {
+        ctx.printMessages();
+        return;
+    }
+
+    document.querySelector('#chat')?.replaceChildren();
+    ctx.chat.forEach((message, messageIndex) => {
+        try {
+            ctx.addOneMessage(message, { forceId: messageIndex, scroll: false });
+        } catch { /* rendering is best-effort; canonical state is already correct */ }
+    });
+}
+
 /** Persistent extension settings (extension_settings.intercede), with defaults applied. */
 export function getSettings(ctx = getCtx()) {
     const store = ctx?.extensionSettings ?? ctx?.extension_settings;
@@ -78,7 +111,43 @@ export function saveSettings(ctx = getCtx()) {
     ctx?.saveSettingsDebounced?.();
 }
 
-/** localforage (bundled with SillyTavern) or a localStorage-backed stand-in. */
+/**
+ * Ask the host whether a generation is running, without depending on events.
+ *
+ * @see docs/RATIONALE.md#HOST-06 why this exists and how far each answer is trusted
+ * @returns {{ state: 'busy'|'idle'|'unknown', source: string, confidence: 'strong'|'weak'|'none' }}
+ */
+export function probeHostGeneration(ctx = getCtx()) {
+    if (typeof ctx?.isGenerating === 'boolean') {
+        return {
+            state: ctx.isGenerating ? 'busy' : 'idle',
+            source: 'ctx.isGenerating',
+            confidence: 'strong',
+        };
+    }
+
+    const streaming = ctx?.streamingProcessor;
+    if (streaming && streaming.isFinished === false) {
+        return { state: 'busy', source: 'ctx.streamingProcessor', confidence: 'strong' };
+    }
+
+    const stopButton = typeof document !== 'undefined'
+        ? document.querySelector('#mes_stop')
+        : null;
+    if (stopButton) {
+        let visible = false;
+        try {
+            visible = globalThis.getComputedStyle(stopButton).display !== 'none';
+        } catch { /* treated as hidden below */ }
+        return visible
+            ? { state: 'busy', source: '#mes_stop', confidence: 'strong' }
+            : { state: 'idle', source: '#mes_stop', confidence: 'weak' };
+    }
+
+    return { state: 'unknown', source: 'none', confidence: 'none' };
+}
+
+/** localforage, or a localStorage stand-in. @see docs/RATIONALE.md#HOST-05 */
 export function getStorageBackend() {
     const lf = globalThis.SillyTavern?.libs?.localforage ?? globalThis.localforage;
     if (lf?.createInstance) {
@@ -132,7 +201,18 @@ export function checkCapabilities() {
     for (const name of required) {
         if (ctx[name] === undefined) missing.push(name);
     }
-    if (!Object.keys(getEventTypes(ctx)).length) missing.push('eventTypes');
+    // @see docs/RATIONALE.md#HOST-04
+    const eventTypes = getEventTypes(ctx);
+    if (!Object.keys(eventTypes).length) {
+        missing.push('eventTypes');
+    } else {
+        for (const name of ['GENERATION_STARTED', 'GENERATION_ENDED', 'CHAT_CHANGED']) {
+            if (!eventTypes[name]) missing.push(`eventTypes.${name}`);
+        }
+        if (!eventTypes.MESSAGE_RECEIVED && !eventTypes.CHARACTER_MESSAGE_RENDERED) {
+            missing.push('eventTypes.MESSAGE_RECEIVED (or CHARACTER_MESSAGE_RENDERED)');
+        }
+    }
 
     const optional = ['sendMessageAsUser', 'saveMetadata', 'SlashCommandParser', 'stopGeneration', 'substituteParams'];
     for (const name of optional) {

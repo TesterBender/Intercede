@@ -6,7 +6,7 @@
  */
 
 import { getCtx, getEventSource, getEventTypes, getSettings } from '../stcontext.js';
-import { getCommittedTipRecord, isEligibleTarget, undoIntercession } from '../transaction.js';
+import { canUndoTip, getCommittedTipRecord, isEligibleTarget, undoIntercession } from '../transaction.js';
 import { debounce, notify } from '../utils.js';
 import { showCompare } from './compare.js';
 import { showConfirm } from './modal.js';
@@ -36,7 +36,7 @@ export function refreshButtonVisibility() {
     if (eligible.ok) {
         const node = document.querySelector(`#chat .mes[mesid="${eligible.targetIndex}"]`);
         node?.classList.add('intercede-eligible');
-        // Interceding a revised continuation extends the chain that produced it.
+        // @see docs/RATIONALE.md#UI-09
         const button = node?.querySelector('.mes_intercede');
         if (button) {
             button.title = eligible.chain?.depth
@@ -44,17 +44,43 @@ export function refreshButtonVisibility() {
                 : 'Intercede — respond inside this message (Alt+I)';
         }
     }
+    // @see docs/RATIONALE.md#UI-08, #TX-15
     const record = getCommittedTipRecord(ctx);
     if (record && Array.isArray(ctx?.chat)) {
-        document.querySelector(`#chat .mes[mesid="${ctx.chat.length - 1}"]`)?.classList.add('intercede-committed');
+        if (undoAvailability.transactionId === record.transactionId) {
+            if (undoAvailability.available) {
+                document.querySelector(`#chat .mes[mesid="${ctx.chat.length - 1}"]`)?.classList.add('intercede-committed');
+            }
+        } else {
+            verifyUndoAvailability(record.transactionId);
+        }
     }
+}
+
+/** Cached answer to "can the tail actually be undone?", keyed by transaction. */
+let undoAvailability = { transactionId: null, available: false };
+let pendingVerification = null;
+
+async function verifyUndoAvailability(transactionId) {
+    if (pendingVerification === transactionId) return;
+    pendingVerification = transactionId;
+
+    let available = false;
+    try {
+        available = await canUndoTip();
+    } catch {
+        available = false;
+    }
+
+    pendingVerification = null;
+    undoAvailability = { transactionId, available };
+    refreshButtonVisibility();
 }
 
 export const refreshButtonVisibilityDebounced = debounce(refreshButtonVisibility, 250);
 
 async function onUndoClick() {
-    // In a chain the message that gets restored is the previous intercession's
-    // continuation, not the character's untouched original — say which.
+    // @see docs/RATIONALE.md#UI-09
     const chained = Boolean(getCommittedTipRecord()?.chainDepth);
     const confirmed = await showConfirm(
         'Undo intercession?',

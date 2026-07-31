@@ -1,11 +1,6 @@
 /**
  * Entry-point dispatcher for the two selection interfaces.
- *
- * Invoking Intercede (wand menu, message button, Alt+I, /intercede) while a
- * mode is already open closes it and restores the message — activation is a
- * toggle. Otherwise the interface chosen in settings opens; if in-place mode
- * cannot attach to the message (formatting pipeline destroyed its markers),
- * the floating window opens instead.
+ * @see docs/RATIONALE.md#UI-10 activation is a toggle, and the fallback rule
  */
 
 import { getSettings } from '../stcontext.js';

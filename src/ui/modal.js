@@ -1,8 +1,6 @@
 /**
  * Minimal self-contained modal/confirm dialogs.
- *
- * Deliberately independent of SillyTavern's popup API so core flows (recovery,
- * cancel-confirmation) cannot break if that surface shifts between releases.
+ * @see docs/RATIONALE.md#UI-07 why this does not use SillyTavern's popup API
  */
 
 import { el } from '../utils.js';

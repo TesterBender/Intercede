@@ -31,8 +31,7 @@ export async function showCompare() {
 
     const content = el('div', 'intercede-compare');
 
-    // In a chain the "original continuation" below is the previous
-    // intercession's revised continuation, not the character's first draft.
+    // @see docs/RATIONALE.md#UI-09
     const ancestry = getChainAncestry(ctx, record.transactionId);
     if (ancestry.length) {
         content.appendChild(el('div', 'intercede-compare-meter',

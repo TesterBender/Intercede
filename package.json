@@ -1,0 +1,19 @@
+{
+    "name": "intercede",
+    "private": true,
+    "type": "module",
+    "description": "Development tooling for the Intercede SillyTavern extension. SillyTavern loads index.js directly; nothing here is shipped or required at runtime.",
+    "scripts": {
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "lint": "eslint .",
+        "check": "npm run lint && npm run test"
+    },
+    "devDependencies": {
+        "@eslint/js": "^9.39.1",
+        "eslint": "^9.39.1",
+        "globals": "^16.5.0",
+        "jsdom": "^28.0.1",
+        "vitest": "^3.2.4"
+    }
+}

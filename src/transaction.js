@@ -3,9 +3,10 @@
  *
  *   Original assistant message  →  Assistant prefix / User insertion / Assistant revised suffix
  *
- * Every step is journaled; any failure restores the complete original message,
- * swipes, and metadata from the snapshot. Rollback is idempotent and refuses to
- * touch messages it cannot prove belong to the transaction.
+ * @see docs/RATIONALE.md#TX-01 the transaction contract
+ * @see docs/RATIONALE.md#TX-05 attribution before ownership is claimed
+ * @see docs/RATIONALE.md#TX-08 selective rollback
+ * @see docs/RATIONALE.md#TX-11 the recovery-required latch
  */
 
 import { resolveAnchor } from './anchors.js';
@@ -17,35 +18,72 @@ import {
     REWRITE_MODES,
     TX_STATE,
 } from './constants.js';
+import { PreflightError, RecoveryRequiredError } from './errors.js';
 import { emitIntercedeEvent } from './events.js';
-import { armLease, disarmLease, isGenerationActive, resetStoppedFlag, wasGenerationStopped } from './lease.js';
+import { beginAssistantCapture, proveGeneratedSuffix } from './generation-capture.js';
+import {
+    armLease,
+    closeLeaseAudit,
+    disarmLease,
+    getGenerationStartSequence,
+    getLeaseReceipt,
+    isGenerationActive,
+    resetStoppedFlag,
+    wasGenerationStopped,
+} from './lease.js';
+import {
+    clearOwnedMarker,
+    createOwnership,
+    getIntercedeMarker,
+    hasKnownRole,
+    isOwnedMessage,
+    markOwnedMessage,
+    OWNED_ROLE,
+} from './ownership.js';
 import { buildRewritePrompt } from './prompt.js';
 import { splitAtOffset } from './segmentation.js';
 import {
+    deleteMessageAt,
     getChatMetadata,
     getCtx,
     getCurrentChatId,
     getEventSource,
     getEventTypes,
     isGroupChat,
-    saveMetadata,
+    persistChatAndMetadata,
 } from './stcontext.js';
 import { hashText, normalizeForComparison, notify, uuid, waitUntil } from './utils.js';
 import { showConfirm } from './ui/modal.js';
-import { qualityWarnings, validateStructure } from './validator.js';
+import { qualityWarnings, validateOwnedStructure } from './validator.js';
 import {
     clearJournal,
+    clearJournalStrict,
     readJournal,
     updateJournal,
+    updateJournalStrict,
     vaultDelete,
+    vaultDeleteStrict,
     vaultGet,
     vaultKeyFor,
     vaultPut,
-    writeJournal,
+    vaultPutStrict,
+    vaultRecordExists,
+    writeJournalStrict,
 } from './vault.js';
 
 /** @type {IntercedeTransaction | null} */
 let activeTransaction = null;
+
+/** Blocks new intercessions once ownership was unprovable. @see docs/RATIONALE.md#TX-11 */
+let recoveryRequired = false;
+
+export function isRecoveryRequired() {
+    return recoveryRequired;
+}
+
+export function clearRecoveryRequired() {
+    recoveryRequired = false;
+}
 
 export function hasActiveTransaction() {
     return activeTransaction !== null;
@@ -78,14 +116,33 @@ function readTransactions(ctx) {
 }
 
 /**
+ * Capture chatMetadata.intercede exactly as it is before the transaction
+ * touches it (§6.2, INV-06).
+ * @see docs/RATIONALE.md#TX-12 — must not materialize the container
+ */
+function snapshotIntercedeMetadata(ctx) {
+    const metadata = getChatMetadata(ctx);
+    const existed = Boolean(metadata) && Object.prototype.hasOwnProperty.call(metadata, METADATA_KEY);
+    return {
+        existed,
+        value: existed ? structuredClone(metadata[METADATA_KEY]) : null,
+    };
+}
+
+function restoreIntercedeMetadata(ctx, snapshot) {
+    const metadata = getChatMetadata(ctx);
+    if (!metadata || !snapshot) return;
+
+    if (!snapshot.existed) {
+        delete metadata[METADATA_KEY];
+    } else {
+        metadata[METADATA_KEY] = structuredClone(snapshot.value);
+    }
+}
+
+/**
  * §12.9 — where a prospective target sits in an intercession chain.
- *
- * Interceding the revised continuation of an earlier intercession is a normal
- * operation: the continuation is an ordinary assistant message that happens to
- * carry a `suffix` marker, and cutting it starts a new transaction whose prefix
- * is that continuation. `depth` counts how many intercessions deep the new one
- * would be (0 = interceding a message no intercession produced).
- *
+ * @see docs/RATIONALE.md#TX-04
  * @returns {{ parentTransactionId: string | null, depth: number }}
  */
 export function getChainPosition(ctx = getCtx(), index = undefined) {
@@ -100,9 +157,8 @@ export function getChainPosition(ctx = getCtx(), index = undefined) {
 }
 
 /**
- * The committed records a transaction is built on, oldest first — the chain
- * that produced the message it cut. Walks the `parentTransactionId` links and
- * stops on a missing or repeated link rather than looping.
+ * The committed records a transaction is built on, oldest first.
+ * @see docs/RATIONALE.md#TX-04
  */
 export function getChainAncestry(ctx = getCtx(), transactionId) {
     const transactions = readTransactions(ctx);
@@ -118,9 +174,8 @@ export function getChainAncestry(ctx = getCtx(), transactionId) {
 }
 
 /**
- * Version-one eligibility: the latest, completed, non-system assistant message
- * in a non-group chat, while nothing is generating. A revised continuation left
- * by an earlier intercession qualifies like any other assistant message.
+ * Version-one eligibility.
+ * @see docs/RATIONALE.md#TX-03 the full precondition list
  * @returns {{ ok: boolean, reason?: string, targetIndex?: number, message?: object, chain?: { parentTransactionId: string | null, depth: number } }}
  */
 export function isEligibleTarget(ctx = getCtx(), index = undefined) {
@@ -138,6 +193,7 @@ export function isEligibleTarget(ctx = getCtx(), index = undefined) {
     if (isGroupChat(ctx)) return { ok: false, reason: 'Group chats are not supported yet.' };
     if (!String(message.mes ?? '').trim()) return { ok: false, reason: 'The message is empty.' };
     if (isGenerationActive()) return { ok: false, reason: 'Wait for the current generation to finish.' };
+    if (recoveryRequired) return { ok: false, reason: 'An earlier intercession needs review. Run /intercede recover first.' };
     if (activeTransaction) return { ok: false, reason: 'Another intercession is already in progress.' };
     return { ok: true, targetIndex, message, chain: getChainPosition(ctx, targetIndex) };
 }
@@ -167,6 +223,37 @@ function messageTimestamp() {
         } catch { /* fall through */ }
     }
     return new Date().toLocaleString();
+}
+
+/**
+ * Delete the messages a transaction created, and nothing else (§5.6, INV-05).
+ * @see docs/RATIONALE.md#TX-08 the two proofs, and why a missing ref is fine
+ */
+async function removeOwnedMessages(ctx, ownership) {
+    const candidates = [
+        { ref: ownership.suffixRef, roles: [OWNED_ROLE.SUFFIX_PENDING, OWNED_ROLE.SUFFIX] },
+        { ref: ownership.insertionRef, roles: [OWNED_ROLE.INSERTION] },
+    ];
+
+    const indexes = new Set();
+    for (const { ref, roles } of candidates) {
+        if (!ref) continue;
+        const index = ctx.chat.indexOf(ref);
+        if (index < 0) continue;
+
+        const marker = getIntercedeMarker(ref);
+        if (marker?.transactionId !== ownership.transactionId || !roles.includes(marker.role)) {
+            throw new RecoveryRequiredError(
+                'A message this intercession created no longer carries its ownership marker.',
+                { transactionId: ownership.transactionId, index },
+            );
+        }
+        indexes.add(index);
+    }
+
+    for (const index of [...indexes].sort((a, b) => b - a)) {
+        await deleteMessageAt(ctx, index);
+    }
 }
 
 function withTimeout(promise, ms, message) {
@@ -199,10 +286,16 @@ export class IntercedeTransaction {
         this.suffix = null;
         this.snapshotMessage = null;
         this.vaultKey = null;
+        /** Proof of which messages this transaction created (§5.2). */
+        this.ownership = null;
+        /** chatMetadata.intercede as it was before this transaction ran. */
+        this.metadataSnapshot = null;
         /** Filled in by preflight; non-zero when the target is itself a revised continuation. */
         this.chain = { parentTransactionId: null, depth: 0 };
         this.result = { warnings: [], preservation: null };
         this._rollingBack = false;
+        /** Canonical state actually changed. @see docs/RATIONALE.md#TX-02 */
+        this._mutated = false;
     }
 
     /**
@@ -267,28 +360,46 @@ export class IntercedeTransaction {
         this.suffix = suffix;
     }
 
-    /** §12.4 / §19 — complete original message into the vault, journal armed. */
+    /**
+     * §12.4 / §19 — complete original message into the vault, journal armed.
+     * @see docs/RATIONALE.md#VAULT-01 and #JRN-01 — nothing here may fail quietly
+     */
     async snapshot() {
         const ctx = getCtx();
         const original = ctx.chat[this.targetIndex];
-        this.snapshotMessage = structuredClone(original);
-        this.vaultKey = vaultKeyFor(this.chatId, this.transactionId);
 
-        writeJournal({
+        this.metadataSnapshot = snapshotIntercedeMetadata(ctx);
+        try {
+            this.snapshotMessage = structuredClone(original);
+        } catch (error) {
+            throw new PreflightError(
+                `The message could not be snapshotted (another extension may have attached non-cloneable data): ${error?.message ?? error}`,
+            );
+        }
+        this.vaultKey = vaultKeyFor(this.chatId, this.transactionId);
+        this.originalChatLength = ctx.chat.length;
+        this.ownership = createOwnership(this.transactionId, this.targetIndex, this.originalChatLength);
+        this.ownership.prefixRef = original;
+
+        writeJournalStrict({
             transactionId: this.transactionId,
             chatId: this.chatId,
             stage: JOURNAL_STAGE.ABOUT_TO_MUTATE,
             vaultKey: this.vaultKey,
             targetIndex: this.targetIndex,
             expectedTargetHash: hashText(String(original.mes ?? '')),
+            originalChatLength: this.originalChatLength,
             startedAt: Date.now(),
         });
 
-        await vaultPut(this.vaultKey, {
+        await vaultPutStrict(this.vaultKey, {
+            state: 'snapshotted',
             transactionId: this.transactionId,
             chatId: this.chatId,
             targetIndex: this.targetIndex,
+            originalChatLength: this.originalChatLength,
             completeOriginalMessage: this.snapshotMessage,
+            metadataSnapshot: this.metadataSnapshot,
             discardedSuffix: this.suffix,
             prefix: this.prefix,
             insertion: this.insertion,
@@ -299,7 +410,7 @@ export class IntercedeTransaction {
             createdAt: Date.now(),
         });
 
-        updateJournal({ stage: JOURNAL_STAGE.SNAPSHOTTED });
+        updateJournalStrict({ stage: JOURNAL_STAGE.SNAPSHOTTED });
         this.state = TX_STATE.SNAPSHOTTED;
     }
 
@@ -311,19 +422,9 @@ export class IntercedeTransaction {
         if (Array.isArray(message.swipes) && Number.isInteger(message.swipe_id) && message.swipes[message.swipe_id] !== undefined) {
             message.swipes[message.swipe_id] = this.prefix;
         }
-        // A chained target already carries its own marker (it is some earlier
-        // transaction's revised continuation). Keep that provenance beside the
-        // new one so the earlier transaction stays identifiable from the
-        // message itself, not only from the snapshot that undo restores.
-        const previous = readMarker(message);
-        message.extra = {
-            ...(message.extra ?? {}),
-            [METADATA_KEY]: {
-                transactionId: this.transactionId,
-                role: 'prefix',
-                ...(previous ? { parent: { transactionId: previous.transactionId, role: previous.role } } : {}),
-            },
-        };
+        // @see docs/RATIONALE.md#TX-04, #OWN-02
+        markOwnedMessage(message, this.transactionId, OWNED_ROLE.PREFIX);
+        this._mutated = true;
 
         try {
             ctx.updateMessageBlock(this.targetIndex, message);
@@ -335,7 +436,7 @@ export class IntercedeTransaction {
             await getEventSource(ctx)?.emit(eventTypes.MESSAGE_UPDATED, this.targetIndex);
         }
 
-        updateJournal({ stage: JOURNAL_STAGE.PREFIX_APPLIED });
+        updateJournalStrict({ stage: JOURNAL_STAGE.PREFIX_APPLIED });
         this.state = TX_STATE.MUTATED;
     }
 
@@ -367,9 +468,10 @@ export class IntercedeTransaction {
             throw new Error('Failed to insert the user message.');
         }
         const inserted = ctx.chat[before];
-        inserted.extra = { ...(inserted.extra ?? {}), [METADATA_KEY]: { transactionId: this.transactionId, role: 'insertion' } };
+        markOwnedMessage(inserted, this.transactionId, OWNED_ROLE.INSERTION);
+        this.ownership.insertionRef = inserted;
 
-        updateJournal({ stage: JOURNAL_STAGE.USER_INSERTED });
+        updateJournalStrict({ stage: JOURNAL_STAGE.USER_INSERTED });
     }
 
     /** §11 — normal SillyTavern generation under a one-generation lease. */
@@ -384,20 +486,81 @@ export class IntercedeTransaction {
             kinds: ['normal'],
             prompt: buildRewritePrompt({ suffix: this.suffix, mode: this.rewriteMode }),
         });
-        updateJournal({ stage: JOURNAL_STAGE.GENERATION_STARTED });
+        updateJournalStrict({ stage: JOURNAL_STAGE.GENERATION_STARTED });
 
+        // @see docs/RATIONALE.md#CAP-01
+        const capture = beginAssistantCapture(ctx, { chatId: this.chatId });
+        const sequenceBeforeCall = getGenerationStartSequence();
+
+        let candidates = [];
+        let generationError = null;
         try {
             const generation = ctx.generate();
             if (generation && typeof generation.then === 'function') {
                 await withTimeout(generation, GENERATION_TIMEOUT_MS, 'Generation timed out.');
             }
-            // Settle: some backends resolve slightly before the reply is appended.
+            // @see docs/RATIONALE.md#TX-17
             await waitUntil(() => !isGenerationActive(), 8000, 100);
+        } catch (error) {
+            generationError = error;
         } finally {
+            // Finalized here so an owned reply is always removable. @see docs/RATIONALE.md#TX-06
+            candidates = capture.finish();
+            closeLeaseAudit(this.transactionId);
             disarmLease();
         }
 
-        updateJournal({ stage: JOURNAL_STAGE.GENERATION_RETURNED });
+        // Can the reply be attributed to *this* call at all?
+        // @see docs/RATIONALE.md#TX-05
+        const receipt = getLeaseReceipt(this.transactionId);
+        const attributable = receipt?.matchingStarts === 1
+            && (receipt.appliedSequence === null || receipt.appliedSequence > sequenceBeforeCall);
+
+        this.ownership.suffixIndex = null;
+        this.ownership.suffixRef = null;
+        let proofError = null;
+
+        if (attributable) {
+            // @see docs/RATIONALE.md#TX-06 claim even when generation failed after
+            try {
+                const proven = proveGeneratedSuffix({ candidates, chat: ctx.chat, ownership: this.ownership });
+                this.ownership.suffixIndex = proven.index;
+                this.ownership.suffixRef = proven.message;
+            } catch (error) {
+                proofError = error;
+            }
+        }
+
+        if (generationError) throw generationError;
+
+        if (!attributable) {
+            const detail = !receipt
+                ? 'the generation lease left no record'
+                : `${receipt.matchingStarts} matching generations ran while this intercession was waiting`;
+            throw new RecoveryRequiredError(
+                `The reply cannot be attributed to this intercession (${detail}), so nothing was claimed, changed further, or deleted.`,
+                { transactionId: this.transactionId },
+            );
+        }
+        if (proofError) throw proofError;
+
+        // @see docs/RATIONALE.md#LEASE-05 — `applied` says nothing about this
+        if (receipt.promptIntegrityLost) {
+            const kinds = [...new Set(receipt.interferingStarts.map(start => start.kind))];
+            const detail = kinds.length ? ` (${kinds.join(', ')})` : ' that was already running';
+            throw new Error(
+                `Another generation${detail} overlapped this intercession and removed the rewrite instruction before it could be used, so the continuation was written without it. Nothing was committed.`,
+            );
+        }
+
+        // Ours, but uninstructed. @see docs/RATIONALE.md#LEASE-03, #LEASE-05
+        if (!receipt.applied) {
+            throw new Error(
+                'The rewrite instruction was never applied to this generation, so the continuation was written without it. Nothing was committed.',
+            );
+        }
+
+        updateJournalStrict({ stage: JOURNAL_STAGE.GENERATION_RETURNED });
     }
 
     /** §12.6 — structural checks are fatal; quality checks warn. */
@@ -409,9 +572,9 @@ export class IntercedeTransaction {
             return { ok: false, fatal: ['The chat changed during generation.'], warnings: [] };
         }
 
-        const structure = validateStructure({
+        const structure = validateOwnedStructure({
             chat: ctx.chat,
-            targetIndex: this.targetIndex,
+            ownership: this.ownership,
             prefix: this.prefix,
             insertion: this.insertion,
         });
@@ -426,12 +589,12 @@ export class IntercedeTransaction {
             if (!keep) return { ok: false, fatal: ['Generation was cancelled.'], warnings: [] };
         }
 
-        const tip = ctx.chat[ctx.chat.length - 1];
+        // @see docs/RATIONALE.md#TX-16
         const quality = qualityWarnings({
             prefix: this.prefix,
             insertion: this.insertion,
             suffix: this.suffix,
-            generated: String(tip.mes ?? ''),
+            generated: String(structure.suffixMessage.mes ?? ''),
             mode: this.rewriteMode,
         });
         this.result = {
@@ -444,76 +607,99 @@ export class IntercedeTransaction {
     /** §12.7 — tag messages, record metadata, enrich the vault, save, announce. */
     async commit() {
         const ctx = getCtx();
-        const chat = ctx.chat;
-        const suffixIndex = chat.length - 1;
-        const tip = chat[suffixIndex];
-        tip.extra = { ...(tip.extra ?? {}), [METADATA_KEY]: { transactionId: this.transactionId, role: 'suffix' } };
+        this.state = TX_STATE.COMMITTING;
 
-        await emitIntercedeEvent(INTERCEDE_EVENTS.BEFORE_COMMIT, {
+        const suffixIndex = this.ownership.suffixIndex;
+        const affectedMessageIds = [
+            this.ownership.prefixIndex,
+            this.ownership.insertionIndex,
+            suffixIndex,
+        ];
+        const eventPayload = {
             transactionId: this.transactionId,
             chatId: this.chatId,
             originalMessageIndex: this.targetIndex,
             originalHash: this.anchor.originalMessageHash,
-            affectedMessageIds: [this.targetIndex, this.targetIndex + 1, suffixIndex],
+            affectedMessageIds,
             discardedSuffixHash: hashText(this.suffix),
             parentTransactionId: this.chain.parentTransactionId,
             chainDepth: this.chain.depth,
             operation: 'commit',
+        };
+
+        // @see docs/RATIONALE.md#TX-07 — listeners may mutate history
+        await emitIntercedeEvent(INTERCEDE_EVENTS.BEFORE_COMMIT, eventPayload);
+
+        const recheck = validateOwnedStructure({
+            chat: ctx.chat,
+            ownership: this.ownership,
+            prefix: this.prefix,
+            insertion: this.insertion,
         });
+        if (!recheck.ok) {
+            throw new RecoveryRequiredError(
+                `The chat changed while committing: ${recheck.fatal.join(' ')}`,
+                { transactionId: this.transactionId },
+            );
+        }
+
+        const suffixMessage = recheck.suffixMessage;
+        markOwnedMessage(suffixMessage, this.transactionId, OWNED_ROLE.SUFFIX);
 
         const container = getMetaContainer(ctx);
-        if (container) {
-            container.transactions[this.transactionId] = {
-                version: 1,
-                state: 'committed',
-                targetMessageIndex: this.targetIndex,
-                prefixMessageId: this.targetIndex,
-                insertionMessageId: this.targetIndex + 1,
-                suffixMessageId: suffixIndex,
-                cutOffset: this.anchor.rawOffset,
-                originalHash: this.anchor.originalMessageHash,
-                prefixHash: hashText(this.prefix),
-                suffixHash: hashText(this.suffix),
-                rewriteMode: this.rewriteMode,
-                vaultKey: this.vaultKey,
-                parentTransactionId: this.chain.parentTransactionId,
-                chainDepth: this.chain.depth,
-                createdAt: Date.now(),
-                committedAt: Date.now(),
-            };
+        if (!container) {
+            throw new Error('Chat metadata is unavailable, so the intercession could not be recorded.');
         }
-
-        const vaultRecord = await vaultGet(this.vaultKey);
-        if (vaultRecord) {
-            await vaultPut(this.vaultKey, {
-                ...vaultRecord,
-                revisedSuffix: String(tip.mes ?? ''),
-                preservation: this.result.preservation,
-            });
-        }
-
-        updateJournal({ stage: JOURNAL_STAGE.COMMITTED });
-        await ctx.saveChat();
-        await saveMetadata(ctx);
-        clearJournal();
-        this.state = TX_STATE.COMMITTED;
-
-        await emitIntercedeEvent(INTERCEDE_EVENTS.COMMITTED, {
-            transactionId: this.transactionId,
-            chatId: this.chatId,
-            originalMessageIndex: this.targetIndex,
+        container.transactions[this.transactionId] = {
+            version: 1,
+            state: 'committed',
+            targetMessageIndex: this.targetIndex,
+            prefixMessageId: this.ownership.prefixIndex,
+            insertionMessageId: this.ownership.insertionIndex,
+            suffixMessageId: suffixIndex,
+            cutOffset: this.anchor.rawOffset,
             originalHash: this.anchor.originalMessageHash,
-            affectedMessageIds: [this.targetIndex, this.targetIndex + 1, suffixIndex],
-            discardedSuffixHash: hashText(this.suffix),
+            prefixHash: hashText(this.prefix),
+            suffixHash: hashText(this.suffix),
+            rewriteMode: this.rewriteMode,
+            vaultKey: this.vaultKey,
             parentTransactionId: this.chain.parentTransactionId,
             chainDepth: this.chain.depth,
-            operation: 'commit',
+            createdAt: Date.now(),
+            committedAt: Date.now(),
+        };
+
+        const vaultRecord = await vaultGet(this.vaultKey);
+        if (!vaultRecord) {
+            throw new Error('The snapshot vault record disappeared before the intercession could be committed.');
+        }
+        await vaultPutStrict(this.vaultKey, {
+            ...vaultRecord,
+            state: 'committed',
+            revisedSuffix: String(suffixMessage.mes ?? ''),
+            preservation: this.result.preservation,
+            committedAt: Date.now(),
         });
+
+        updateJournalStrict({ stage: JOURNAL_STAGE.COMMITTING });
+        await persistChatAndMetadata(ctx);
+
+        updateJournalStrict({ stage: JOURNAL_STAGE.COMMITTED });
+        clearJournalStrict();
+        this.state = TX_STATE.COMMITTED;
+
+        await emitIntercedeEvent(INTERCEDE_EVENTS.COMMITTED, eventPayload);
     }
 
-    /** §12.8 — idempotent, exact restoration. */
+    /**
+     * §12.8 — idempotent, exact restoration.
+     * @see docs/RATIONALE.md#TX-08 and #TX-09
+     */
     async rollback(reason) {
-        if (this._rollingBack || this.state === TX_STATE.COMMITTED || this.state === TX_STATE.ROLLED_BACK) return;
+        if (this._rollingBack
+            || this.state === TX_STATE.COMMITTED
+            || this.state === TX_STATE.ROLLED_BACK
+            || this.state === TX_STATE.RECOVERY_REQUIRED) return;
         this._rollingBack = true;
         this.state = TX_STATE.ROLLING_BACK;
         console.warn('[Intercede] rolling back:', reason);
@@ -525,35 +711,53 @@ export class IntercedeTransaction {
         disarmLease();
 
         try {
-            if (!this.snapshotMessage) {
-                // Nothing was mutated yet.
-                clearJournal();
+            if (!this._mutated) {
+                // @see docs/RATIONALE.md#TX-02, #JRN-02
+                if (readJournal()?.transactionId === this.transactionId) clearJournal();
+                if (this.vaultKey) await vaultDelete(this.vaultKey);
                 this.state = TX_STATE.ROLLED_BACK;
                 return;
             }
 
             if (!ctx || getCurrentChatId(ctx) !== this.chatId) {
-                // The user switched chats mid-transaction. Never touch the active
-                // chat; the journal stays behind so recovery runs when the
-                // original chat is reopened.
+                // @see docs/RATIONALE.md#TX-10
                 notify('warning', 'The chat changed during an intercession. Reopen that chat to restore the original message.', { timeOut: 10000 });
                 return;
             }
 
-            // Everything after the target index was created by this transaction.
-            while (ctx.chat.length > this.targetIndex + 1) {
-                const removedIndex = ctx.chat.length - 1;
-                ctx.chat.pop();
-                removeMessageNode(removedIndex);
+            if (reason instanceof RecoveryRequiredError) {
+                await this.enterRecoveryRequired(reason);
+                return;
             }
-            ctx.chat[this.targetIndex] = structuredClone(this.snapshotMessage);
-            reAddMessage(ctx, this.targetIndex, ctx.chat[this.targetIndex]);
 
             try {
-                await ctx.saveChat();
+                await removeOwnedMessages(ctx, this.ownership);
             } catch (error) {
-                notify('error', 'Rollback succeeded in memory but the chat could not be saved. Do not close this chat until it saves.', { timeOut: 0 });
+                await this.enterRecoveryRequired(error);
+                return;
+            }
+
+            const prefixIndex = ctx.chat.indexOf(this.ownership.prefixRef);
+            if (prefixIndex < 0 || !isOwnedMessage(this.ownership.prefixRef, this.transactionId, OWNED_ROLE.PREFIX)) {
+                await this.enterRecoveryRequired(new RecoveryRequiredError(
+                    'The message this intercession cut can no longer be proven to belong to it.',
+                ));
+                return;
+            }
+
+            ctx.chat[prefixIndex] = structuredClone(this.snapshotMessage);
+            reAddMessage(ctx, prefixIndex, ctx.chat[prefixIndex]);
+            restoreIntercedeMetadata(ctx, this.metadataSnapshot);
+
+            try {
+                await persistChatAndMetadata(ctx);
+            } catch (error) {
+                // @see docs/RATIONALE.md#TX-09
                 console.error('[Intercede] save after rollback failed', error);
+                await this.enterRecoveryRequired(new RecoveryRequiredError(
+                    'The original message was restored in memory but the chat could not be saved. Do not close this chat.',
+                ));
+                return;
             }
 
             updateJournal({ stage: JOURNAL_STAGE.ROLLED_BACK });
@@ -571,6 +775,27 @@ export class IntercedeTransaction {
         } finally {
             this._rollingBack = false;
         }
+    }
+
+    /**
+     * Ownership is ambiguous — stop and hand the decision to the user (§5.7).
+     * @see docs/RATIONALE.md#TX-11
+     */
+    async enterRecoveryRequired(error) {
+        this.state = TX_STATE.RECOVERY_REQUIRED;
+        recoveryRequired = true;
+
+        const detail = String(error?.message ?? error);
+        try {
+            updateJournal({ stage: JOURNAL_STAGE.RECOVERY_REQUIRED, error: detail });
+        } catch { /* the notice below is the real signal */ }
+
+        console.error('[Intercede] recovery required:', detail);
+        notify(
+            'error',
+            `Intercede stopped without changing anything further: ${detail} No messages were deleted. Run /intercede recover to review.`,
+            { timeOut: 0 },
+        );
     }
 }
 
@@ -594,12 +819,51 @@ export function getCommittedTipRecord(ctx = getCtx()) {
 }
 
 /**
+ * Whether Undo and Compare can actually deliver (INV-10).
+ * @see docs/RATIONALE.md#TX-15
+ */
+export async function canUndoTip(ctx = getCtx()) {
+    const record = getCommittedTipRecord(ctx);
+    if (!record?.vaultKey || record.finalizedAt) return false;
+    return vaultRecordExists(record.vaultKey);
+}
+
+/**
+ * Give up undo for the committed intercession at the tail, irreversibly.
+ * @see docs/RATIONALE.md#TX-14
+ */
+export async function finalizeIntercession() {
+    const ctx = getCtx();
+    if (!ctx) return { ok: false, reason: 'SillyTavern context unavailable.' };
+    if (activeTransaction) return { ok: false, reason: 'An intercession is in progress.' };
+
+    const record = getCommittedTipRecord(ctx);
+    if (!record) {
+        return { ok: false, reason: 'The chat tail is not a completed intercession.' };
+    }
+    if (record.finalizedAt) {
+        return { ok: false, reason: 'This intercession has already been finalized.' };
+    }
+
+    if (record.vaultKey) {
+        await vaultDeleteStrict(record.vaultKey);
+    }
+
+    const container = getMetaContainer(ctx);
+    const stored = container?.transactions?.[record.transactionId];
+    if (stored) {
+        stored.finalizedAt = Date.now();
+        delete stored.vaultKey;
+    }
+    await persistChatAndMetadata(ctx);
+
+    notify('success', 'Intercession finalized — the undo snapshot was deleted. The messages are unchanged.');
+    return { ok: true };
+}
+
+/**
  * §14.1/§14.2 — undo the committed intercession while it is still the chat tail.
- *
- * Chains unwind newest-first: restoring the snapshot puts back the message the
- * cut was made in, marker and all, so if that message was an earlier
- * intercession's revised continuation the tail becomes that intercession again
- * and undo can be run once more.
+ * @see docs/RATIONALE.md#TX-13 how chains unwind
  * @returns {Promise<{ ok: boolean, reason?: string }>}
  */
 export async function undoIntercession() {
@@ -618,12 +882,12 @@ export async function undoIntercession() {
         return { ok: false, reason: 'The original snapshot is no longer in the vault, so an exact undo is not possible.' };
     }
 
+    // @see docs/RATIONALE.md#TX-13 — the tip record already proved all three
     const chat = ctx.chat;
     const prefixIndex = chat.length - 3;
-    for (let index = chat.length - 1; index > prefixIndex; index--) {
-        chat.pop();
-        removeMessageNode(index);
-    }
+    await deleteMessageAt(ctx, prefixIndex + 2);
+    await deleteMessageAt(ctx, prefixIndex + 1);
+
     chat[prefixIndex] = structuredClone(vaultRecord.completeOriginalMessage);
     reAddMessage(ctx, prefixIndex, chat[prefixIndex]);
 
@@ -631,8 +895,16 @@ export async function undoIntercession() {
     if (container?.transactions?.[record.transactionId]) {
         delete container.transactions[record.transactionId];
     }
-    await ctx.saveChat();
-    await saveMetadata(ctx);
+
+    try {
+        await persistChatAndMetadata(ctx);
+    } catch (error) {
+        // @see docs/RATIONALE.md#TX-13 — the snapshot deliberately stays
+        console.error('[Intercede] save after undo failed', error);
+        notify('error', 'The original message was restored in memory but the chat could not be saved. Do not close this chat.', { timeOut: 0 });
+        return { ok: false, reason: 'The undo could not be saved.' };
+    }
+
     await vaultDelete(record.vaultKey);
 
     await emitIntercedeEvent(INTERCEDE_EVENTS.UNDONE, {
@@ -663,39 +935,156 @@ export async function checkRecovery() {
     }
 }
 
+/**
+ * How much the journal stage lets us assume, per §7.5.
+ * @see docs/RATIONALE.md#REC-01 the stage table
+ */
+const STAGES_BEFORE_MUTATION = [
+    JOURNAL_STAGE.ABOUT_TO_MUTATE,
+    JOURNAL_STAGE.SNAPSHOTTED,
+];
+
 async function checkRecoveryInner() {
     const journal = readJournal();
     if (!journal) return;
+    if (activeTransaction) return; // the live transaction owns the journal
+
     if (journal.stage === JOURNAL_STAGE.COMMITTED || journal.stage === JOURNAL_STAGE.ROLLED_BACK) {
         clearJournal();
         return;
     }
-    if (activeTransaction) return; // the live transaction owns the journal
 
     const ctx = getCtx();
     const chatId = getCurrentChatId(ctx);
     if (journal.chatId !== chatId) {
+        // @see docs/RATIONALE.md#REC-05
         notify('warning', `An unfinished intercession exists in another chat ("${journal.chatId}"). Open that chat to recover it.`, { timeOut: 10000 });
         return;
     }
 
-    const vaultRecord = await vaultGet(journal.vaultKey);
-    if (!vaultRecord?.completeOriginalMessage) {
-        notify('error', 'An unfinished intercession was found, but its snapshot is missing. Please review the last messages manually.');
-        clearJournal();
+    if (journal.stage === JOURNAL_STAGE.RECOVERY_REQUIRED) {
+        recoveryRequired = true;
+        const why = journal.error ? `: ${journal.error}` : '.';
+        const snapshot = await vaultGet(journal.vaultKey);
+
+        // @see docs/RATIONALE.md#TX-09 — a save-failed rollback lands here
+        if (snapshot?.completeOriginalMessage) {
+            const restore = await showConfirm(
+                'An intercession needs your review',
+                `Intercede stopped without deleting anything${why} Restore the original message from its snapshot, or keep the chat exactly as it stands now?`,
+                { confirmLabel: 'Restore original', cancelLabel: 'Keep chat as it is' },
+            );
+            if (restore) {
+                await restoreFromVaultRecord(ctx, journal, snapshot);
+                return;
+            }
+            if (!await abandonInterruptedTransaction(ctx, journal, snapshot)) {
+                notify('warning', 'Some messages still carry markers from the interrupted intercession, so it stays open for review.', { timeOut: 10000 });
+            }
+            return;
+        }
+
+        // @see docs/RATIONALE.md#REC-02
+        notify(
+            'error',
+            `Intercede stopped without deleting anything${why} Its snapshot is missing, so the interruption is being kept on record. Please review the last few messages yourself.`,
+            { timeOut: 0 },
+        );
         return;
     }
 
+    // @see docs/RATIONALE.md#REC-01
+    if (STAGES_BEFORE_MUTATION.includes(journal.stage)) {
+        const target = ctx?.chat?.[journal.targetIndex];
+        if (target && hashText(String(target.mes ?? '')) === journal.expectedTargetHash) {
+            clearJournal();
+            if (journal.vaultKey) await vaultDelete(journal.vaultKey);
+            return;
+        }
+    }
+
+    const vaultRecord = await vaultGet(journal.vaultKey);
+    if (!vaultRecord?.completeOriginalMessage) {
+        // @see docs/RATIONALE.md#REC-02
+        recoveryRequired = true;
+        try {
+            updateJournal({ stage: JOURNAL_STAGE.RECOVERY_REQUIRED, error: 'snapshot-missing' });
+        } catch { /* the notice below is the real signal */ }
+        notify(
+            'error',
+            'An unfinished intercession was found, but its recovery snapshot is missing. No history was changed automatically — please review the last few messages.',
+            { timeOut: 0 },
+        );
+        return;
+    }
+
+    const committing = journal.stage === JOURNAL_STAGE.COMMITTING;
     const restore = await showConfirm(
         'Recover interrupted intercession?',
-        'An intercession in this chat did not finish (reload or crash). Restore the original assistant message exactly as it was?',
+        committing
+            ? 'An intercession in this chat was interrupted while being saved. Restore the original assistant message exactly as it was, or keep the chat as it currently stands?'
+            : 'An intercession in this chat did not finish (reload or crash). Restore the original assistant message exactly as it was?',
         { confirmLabel: 'Restore original', cancelLabel: 'Keep chat as it is' },
     );
     if (!restore) {
-        clearJournal();
+        if (!await abandonInterruptedTransaction(ctx, journal, vaultRecord)) {
+            recoveryRequired = true;
+            notify('warning', 'Some messages still carry markers from the interrupted intercession, so it stays open for review.', { timeOut: 10000 });
+        }
         return;
     }
     await restoreFromVaultRecord(ctx, journal, vaultRecord);
+}
+
+/**
+ * Resolve an interrupted transaction by accepting the chat as it stands (P0-03).
+ * @see docs/RATIONALE.md#REC-03 why the snapshot and markers are handled this way
+ * @returns {Promise<boolean>} false when the state could not be resolved safely
+ */
+async function abandonInterruptedTransaction(ctx, journal, vaultRecord) {
+    const transactionId = journal.transactionId;
+    const marked = ctx.chat.filter(
+        message => getIntercedeMarker(message)?.transactionId === transactionId,
+    );
+
+    if (!marked.every(message => hasKnownRole(message, transactionId))) {
+        return false;
+    }
+
+    for (const message of marked) {
+        clearOwnedMarker(message, transactionId);
+    }
+
+    const container = getMetaContainer(ctx);
+    if (container) {
+        container.transactions[transactionId] = {
+            version: 1,
+            state: 'abandoned',
+            abandonedAt: Date.now(),
+            targetMessageIndex: journal.targetIndex,
+            originalHash: journal.expectedTargetHash,
+            vaultKey: journal.vaultKey,
+            reason: 'The chat was kept as it stood when recovery ran.',
+        };
+    }
+
+    try {
+        await persistChatAndMetadata(ctx);
+    } catch (error) {
+        console.error('[Intercede] save while abandoning a transaction failed', error);
+        return false;
+    }
+
+    // @see docs/RATIONALE.md#REC-03, #VAULT-02 — the snapshot is kept on purpose
+    if (vaultRecord && journal.vaultKey) {
+        try {
+            await vaultPut(journal.vaultKey, { ...vaultRecord, state: 'abandoned', abandonedAt: Date.now() });
+        } catch { /* the metadata record already preserves the reference */ }
+    }
+
+    clearJournal();
+    recoveryRequired = false;
+    return true;
 }
 
 async function restoreFromVaultRecord(ctx, journal, vaultRecord) {
@@ -716,32 +1105,38 @@ async function restoreFromVaultRecord(ctx, journal, vaultRecord) {
         return;
     }
 
-    // Only remove messages that can be proven to belong to the interrupted
-    // transaction; stop the moment anything else is found.
+    // @see docs/RATIONALE.md#REC-04 what counts as proof here
     while (chat.length > targetIndex + 1) {
         const index = chat.length - 1;
         const message = chat[index];
         const marker = message?.extra?.[METADATA_KEY];
         const belongs = marker?.transactionId === journal.transactionId
             || (index === targetIndex + 1 && message?.is_user
-                && normalizeForComparison(message.mes) === normalizeForComparison(vaultRecord.insertion))
-            || (index === targetIndex + 2 && !message?.is_user && !message?.is_system);
+                && normalizeForComparison(message.mes) === normalizeForComparison(vaultRecord.insertion));
         if (!belongs) {
-            notify('warning', 'Recovery stopped: later messages do not belong to the intercession. Restore manually if needed.', { timeOut: 10000 });
+            notify('warning', 'Recovery stopped: later messages could not be proven to belong to the intercession. Nothing was deleted.', { timeOut: 10000 });
             return;
         }
-        chat.pop();
-        removeMessageNode(index);
+        await deleteMessageAt(ctx, index);
     }
 
     chat[targetIndex] = structuredClone(vaultRecord.completeOriginalMessage);
     reAddMessage(ctx, targetIndex, chat[targetIndex]);
-    try {
-        await ctx.saveChat();
-    } catch (error) {
-        console.error('[Intercede] save after recovery failed', error);
+    if (vaultRecord.metadataSnapshot) {
+        restoreIntercedeMetadata(ctx, vaultRecord.metadataSnapshot);
     }
+
+    try {
+        await persistChatAndMetadata(ctx);
+    } catch (error) {
+        // @see docs/RATIONALE.md#REC-02 — journal and snapshot stay for a retry
+        console.error('[Intercede] save after recovery failed', error);
+        notify('error', 'The original message was restored in memory but the chat could not be saved. Do not close this chat.', { timeOut: 0 });
+        return;
+    }
+
     clearJournal();
+    recoveryRequired = false;
     await vaultDelete(journal.vaultKey);
 
     await emitIntercedeEvent(INTERCEDE_EVENTS.ROLLED_BACK, {
