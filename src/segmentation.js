@@ -3,7 +3,7 @@
  *
  * @see docs/RATIONALE.md#SEG-01 raw source only, never the DOM
  * @see docs/RATIONALE.md#SEG-02 what counts as a protected range
- * @see docs/RATIONALE.md#SEG-03 KNOWN DEFECT in SEPARATOR_REGEX (deferred)
+ * @see docs/RATIONALE.md#SEG-03 a paragraph break is a blank line
  */
 
 import { BOUNDARY_TYPES } from './constants.js';
@@ -12,6 +12,76 @@ import { BOUNDARY_TYPES } from './constants.js';
  * @typedef {{ start: number, end: number, kind: string }} ProtectedRange
  * @typedef {{ offset: number, type: 'paragraph' | 'sentence' }} Boundary
  */
+
+/**
+ * One character that cannot start a blank line. Markdown emphasis never spans a
+ * paragraph break, so this keeps an unclosed delimiter from swallowing the rest
+ * of the message.
+ */
+const WITHIN_BLOCK = String.raw`(?:(?!\n[^\S\n]*\n)[\s\S])`;
+
+/**
+ * Paired Markdown emphasis. Each pattern requires a non-space character just
+ * inside both delimiters, which is what makes the pair render as emphasis at
+ * all — so text these miss was not emphasis to begin with.
+ * @see docs/RATIONALE.md#SEG-07
+ */
+const EMPHASIS_PATTERNS = [
+    // ~~strikethrough~~
+    String.raw`~~(?!\s)(?:(?!~~)${WITHIN_BLOCK})+?(?<!\s)~~`,
+    // **strong** and __strong__
+    String.raw`\*\*(?!\s)(?:(?!\*\*)${WITHIN_BLOCK})+?(?<!\s)\*\*`,
+    String.raw`(?<![\w_])__(?!\s)(?:(?!__)${WITHIN_BLOCK})+?(?<!\s)__(?![\w_])`,
+    // *emphasis* and _emphasis_ — the lookarounds keep a*b and snake_case out
+    String.raw`(?<![\w*])\*(?!\s)(?:(?!\*)${WITHIN_BLOCK})+?(?<!\s)\*(?!\*)`,
+    String.raw`(?<![\w_])_(?!\s)(?:(?!_)${WITHIN_BLOCK})+?(?<!\s)_(?![\w_])`,
+].map(source => new RegExp(source, 'g'));
+
+/** A line that opens a bullet or ordered list item. */
+const LIST_ITEM_REGEX = /^[^\S\n]{0,3}(?:[-*+]|\d{1,9}[.)])[^\S\n]+\S/;
+/** An indented line continuing the item above it. */
+const LIST_CONTINUATION_REGEX = /^[^\S\n]{2,}\S/;
+
+/**
+ * Protect each run of list items as one unit.
+ *
+ * A cut between two items would leave a truncated list in the prefix and hand
+ * the rest to a regeneration that has no reason to continue the numbering.
+ * @see docs/RATIONALE.md#SEG-08
+ */
+function addListRanges(text, ranges) {
+    const lines = text.split('\n');
+    const lineStarts = [];
+    let offset = 0;
+    for (const line of lines) {
+        lineStarts.push(offset);
+        offset += line.length + 1;
+    }
+
+    let start = -1;
+    let end = 0;
+    const flush = () => {
+        if (start !== -1) ranges.push({ start, end, kind: 'list' });
+        start = -1;
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (LIST_ITEM_REGEX.test(line)) {
+            if (start === -1) start = lineStarts[i];
+            end = lineStarts[i] + line.length;
+        } else if (start === -1) {
+            continue;
+        } else if (LIST_CONTINUATION_REGEX.test(line)) {
+            end = lineStarts[i] + line.length;
+        } else if (!line.trim() && LIST_ITEM_REGEX.test(lines[i + 1] ?? '')) {
+            // A loose list keeps the blank line between its items inside the run.
+        } else {
+            flush();
+        }
+    }
+    flush();
+}
 
 /**
  * Compute regions of the raw text that must not contain a cut.
@@ -58,6 +128,10 @@ export function getProtectedRanges(text) {
     addMatches(/<\/?[a-zA-Z][^<>\n]*>/g, 'html-tag');
     // Macro expressions.
     addMatches(/\{\{[^{}]*\}\}/g, 'macro');
+    // @see docs/RATIONALE.md#SEG-07
+    for (const pattern of EMPHASIS_PATTERNS) addMatches(pattern, 'emphasis');
+    // @see docs/RATIONALE.md#SEG-08
+    addListRanges(text, ranges);
 
     ranges.sort((a, b) => a.start - b.start);
     return ranges;
@@ -69,20 +143,21 @@ export function isOffsetProtected(offset, ranges) {
 }
 
 /**
- * Separator runs: one or more newlines with optional horizontal whitespace.
- * @see docs/RATIONALE.md#SEG-03 — KNOWN DEFECT: a single newline reads as a
- * paragraph break, degrading getBlocks() into a line-splitter. Deferred.
+ * A paragraph break: a blank line, i.e. two or more newlines separated by at
+ * most horizontal whitespace. A single newline is a line break within a
+ * paragraph and is deliberately not one of these.
+ * @see docs/RATIONALE.md#SEG-03
  */
-const SEPARATOR_REGEX = /\n[^\S\n]*(?:\n[^\S\n]*)*/g;
+const PARAGRAPH_SEPARATOR_REGEX = /\n[^\S\n]*(?:\n[^\S\n]*)+/g;
 
 /**
- * Blocks of text between separator runs.
+ * Blocks of text between paragraph separators.
  * @returns {{ start: number, end: number }[]} half-open [start, end) ranges of block text
  */
 function getBlocks(text) {
     const blocks = [];
     let cursor = 0;
-    for (const match of text.matchAll(SEPARATOR_REGEX)) {
+    for (const match of text.matchAll(PARAGRAPH_SEPARATOR_REGEX)) {
         if (match.index > cursor) blocks.push({ start: cursor, end: match.index });
         cursor = match.index + match[0].length;
     }
@@ -143,8 +218,8 @@ export function getBoundaries(text, granularity = 'sentence') {
         return true;
     };
 
-    // Paragraph boundaries: at the start of every separator run (end of the preceding block).
-    for (const match of text.matchAll(SEPARATOR_REGEX)) {
+    // Paragraph boundaries: at the start of every blank line (end of the preceding block).
+    for (const match of text.matchAll(PARAGRAPH_SEPARATOR_REGEX)) {
         const offset = match.index;
         if (isValidCut(offset)) {
             boundaries.push({ offset, type: BOUNDARY_TYPES.PARAGRAPH });
@@ -154,8 +229,11 @@ export function getBoundaries(text, granularity = 'sentence') {
     if (granularity === 'sentence') {
         for (const block of getBlocks(text)) {
             const blockText = text.slice(block.start, block.end);
-            if (isOffsetProtected(block.start + 1, ranges) && isOffsetProtected(block.end - 1, ranges)) {
-                continue; // block lives entirely inside a protected region
+            // One range must swallow the whole block. Testing the two ends
+            // separately would skip a block whose ends sit in *different*
+            // ranges — two adjacent emphasis spans with a free cut between them.
+            if (ranges.some(range => range.start <= block.start && range.end >= block.end)) {
+                continue;
             }
             for (const relStart of segmentSentences(blockText)) {
                 // Cut at the end of the sentence text, before separator whitespace.

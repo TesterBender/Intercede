@@ -1,6 +1,6 @@
 /**
  * Custom Intercede events (§15).
- * @see docs/RATIONALE.md#CFG-02 the contract, and the unemitted event
+ * @see docs/RATIONALE.md#CFG-02 the contract, and why `invalidated` is an umbrella
  */
 
 import { INTERCEDE_EVENTS } from './constants.js';
