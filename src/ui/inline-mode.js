@@ -7,11 +7,12 @@
  * @see docs/RATIONALE.md#VIS-01 how boundaries are classified first
  */
 
-import { BOUNDARY_TYPES } from '../constants.js';
-import { getCtx } from '../stcontext.js';
+import { BOUNDARY_TYPES, REWRITE_MODES, REWRITE_MODE_LABELS } from '../constants.js';
+import { getBoundaries } from '../segmentation.js';
+import { getCtx, getCurrentChatId, getSettings } from '../stcontext.js';
+import { isEligibleTarget } from '../transaction.js';
 import { el, notify } from '../utils.js';
-import { findDraftBoundaryIndex, getDraft } from './commit-flow.js';
-import { buildComposer, commitFromState, resolveSelectionTarget, saveDraftFromState } from './selection.js';
+import { confirmAndCommit, findDraftBoundaryIndex, getDraft, setDraft } from './commit-flow.js';
 import { classifyBoundaries, renderInstrumented, SENTINEL_REGEX } from './visibility.js';
 
 export { instrumentRaw } from './visibility.js';
@@ -29,17 +30,28 @@ export function isInlineModeOpen() {
  * @returns {'ok' | 'fallback'} 'fallback' when the floating window should be used instead
  */
 export function openInlineMode(index = undefined) {
-    const target = resolveSelectionTarget(index);
-    if (!target.ok) return 'ok';
-
-    const { raw, boundaries, message, targetIndex } = target;
+    const ctx = getCtx();
+    const settings = getSettings(ctx);
+    const eligible = isEligibleTarget(ctx, index);
+    if (!eligible.ok) {
+        notify('warning', eligible.reason);
+        return 'ok';
+    }
+    const targetIndex = eligible.targetIndex;
     const mesNode = document.querySelector(`#chat .mes[mesid="${targetIndex}"]`);
     const mesTextNode = mesNode?.querySelector('.mes_text');
     if (!mesNode || !mesTextNode) {
         return 'fallback';
     }
 
-    const container = renderInstrumented(raw, boundaries, message, targetIndex);
+    const raw = String(eligible.message.mes ?? '');
+    const boundaries = getBoundaries(raw, settings.boundaries);
+    if (!boundaries.length) {
+        notify('warning', 'No safe insertion points were found in this message.');
+        return 'ok';
+    }
+
+    const container = renderInstrumented(raw, boundaries, eligible.message, targetIndex);
     if (!container) return 'fallback';
     // @see docs/RATIONALE.md#VIS-01
     const statuses = classifyBoundaries(raw, boundaries, container);
@@ -47,9 +59,9 @@ export function openInlineMode(index = undefined) {
     closeInlineMode();
     inlineState = {
         targetIndex,
-        chatId: target.chatId,
-        message,
-        settings: target.settings,
+        chatId: getCurrentChatId(ctx),
+        message: eligible.message,
+        settings,
         raw,
         boundaries,
         mesNode,
@@ -120,7 +132,7 @@ export function openInlineMode(index = undefined) {
 export function closeInlineMode() {
     const state = inlineState;
     if (!state) return;
-    saveDraftFromState(state);
+    saveDraftFromComposer();
     document.removeEventListener('keydown', state.onKeydown, true);
     document.removeEventListener('mousedown', state.onDocMousedown, true);
     inlineState = null;
@@ -136,6 +148,17 @@ export function closeInlineMode() {
     } catch (error) {
         console.warn('[Intercede] native re-render on close failed', error);
     }
+}
+
+function saveDraftFromComposer() {
+    const state = inlineState;
+    const textarea = state?.composer?.querySelector('textarea');
+    if (!state || !textarea) return;
+    setDraft(state.chatId, state.targetIndex, {
+        text: textarea.value,
+        mode: state.composer.querySelector('select')?.value,
+        boundaryOffset: state.selectedIndex === null ? null : state.boundaries[state.selectedIndex]?.offset,
+    });
 }
 
 /** Nearest block-level host of a node, stopping below the container. */
@@ -257,7 +280,7 @@ function selectInlineBoundary(index, draft = null) {
     const marker = state.markers.get(index);
     if (!marker) return;
 
-    saveDraftFromState(state);
+    saveDraftFromComposer();
     state.undoDim?.();
     state.undoDim = null;
     state.composer?.remove();
@@ -271,16 +294,8 @@ function selectInlineBoundary(index, draft = null) {
     const startNode = marker.dataset.hosted ? marker.parentElement : marker;
     state.undoDim = dimAfter(startNode, state.mesTextNode);
 
-    const composer = buildComposer({
-        state,
-        draft: draft ?? getDraft(state.chatId, state.targetIndex),
-        variant: 'intercede-composer-inline',
-        onCommit: commitInlineSelection,
-        onCancel: () => {
-            saveDraftFromState(inlineState);
-            clearInlineSelection();
-        },
-    });
+    const stored = draft ?? getDraft(state.chatId, state.targetIndex);
+    const composer = buildInlineComposer(stored);
     const anchorBlock = marker.dataset.hosted
         ? marker.parentElement
         : (hostBlockOf(marker, state.mesTextNode) ?? marker);
@@ -302,6 +317,72 @@ function clearInlineSelection() {
     for (const [, node] of state.markers) node.classList.remove('intercede-imarker-selected');
 }
 
+function buildInlineComposer(draft) {
+    const state = inlineState;
+    const composer = el('div', 'intercede-composer intercede-composer-inline');
+
+    const textarea = document.createElement('textarea');
+    textarea.className = 'text_pole intercede-composer-text';
+    textarea.placeholder = 'Your response at this point…';
+    textarea.rows = 3;
+    if (draft?.text) textarea.value = draft.text;
+    textarea.addEventListener('input', saveDraftFromComposer);
+
+    const controls = el('div', 'intercede-composer-controls');
+
+    const select = document.createElement('select');
+    select.className = 'text_pole intercede-mode-select';
+    for (const mode of Object.values(REWRITE_MODES)) {
+        const option = document.createElement('option');
+        option.value = mode;
+        option.textContent = REWRITE_MODE_LABELS[mode];
+        select.appendChild(option);
+    }
+    select.value = draft?.mode ?? state.settings.defaultMode ?? REWRITE_MODES.ADAPTIVE;
+
+    const commitButton = el('button', 'menu_button intercede-primary', 'Intercede');
+    commitButton.type = 'button';
+    commitButton.title = 'Commit (Ctrl+Enter)';
+    commitButton.addEventListener('click', commitInlineSelection);
+
+    const cancelButton = el('button', 'menu_button', 'Cancel');
+    cancelButton.type = 'button';
+    cancelButton.addEventListener('click', () => {
+        saveDraftFromComposer();
+        clearInlineSelection();
+    });
+
+    controls.append(select, commitButton, cancelButton);
+    composer.append(textarea, controls);
+    composer.appendChild(el('div', 'intercede-composer-hint',
+        'Everything above stays exactly as written. Everything dimmed below is rewritten around your response.'));
+    return composer;
+}
+
 async function commitInlineSelection() {
-    await commitFromState(inlineState, closeInlineMode);
+    const state = inlineState;
+    if (!state || state.selectedIndex === null || !state.composer) return;
+
+    const textarea = state.composer.querySelector('textarea');
+    const insertionText = textarea.value.trim();
+    if (!insertionText) {
+        notify('warning', 'Write your response first.');
+        textarea.focus();
+        return;
+    }
+    const rewriteMode = state.composer.querySelector('select').value;
+    const boundary = state.boundaries[state.selectedIndex];
+    saveDraftFromComposer();
+
+    await confirmAndCommit({
+        chatId: state.chatId,
+        targetIndex: state.targetIndex,
+        raw: state.raw,
+        boundary,
+        insertionText,
+        rewriteMode,
+        message: state.message,
+        settings: state.settings,
+        closeMode: closeInlineMode,
+    });
 }

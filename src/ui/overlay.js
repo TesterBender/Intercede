@@ -3,10 +3,12 @@
  * @see docs/RATIONALE.md#UI-03 the overlay never mutates the chat message
  */
 
-import { BOUNDARY_TYPES } from '../constants.js';
+import { BOUNDARY_TYPES, REWRITE_MODES, REWRITE_MODE_LABELS } from '../constants.js';
+import { getBoundaries } from '../segmentation.js';
+import { getCtx, getCurrentChatId, getSettings } from '../stcontext.js';
+import { isEligibleTarget } from '../transaction.js';
 import { el, notify } from '../utils.js';
-import { findDraftBoundaryIndex, getDraft } from './commit-flow.js';
-import { buildComposer, commitFromState, resolveSelectionTarget, saveDraftFromState } from './selection.js';
+import { confirmAndCommit, findDraftBoundaryIndex, getDraft, setDraft } from './commit-flow.js';
 import { classifyBoundaries, renderInstrumented } from './visibility.js';
 
 let overlayState = null;
@@ -17,23 +19,42 @@ export function isOverlayOpen() {
 
 export function closeOverlay() {
     if (!overlayState) return;
-    saveDraftFromState(overlayState);
+    saveDraftFromComposer();
     document.removeEventListener('keydown', overlayState.onKeydown, true);
     overlayState.backdrop.remove();
     overlayState = null;
+}
+
+function saveDraftFromComposer() {
+    const state = overlayState;
+    const textarea = state?.composer?.querySelector('textarea');
+    if (!state || !textarea) return;
+    setDraft(state.chatId, state.targetIndex, {
+        text: textarea.value,
+        mode: state.composer.querySelector('select')?.value,
+        boundaryOffset: state.selectedIndex === null ? null : state.boundaries[state.selectedIndex]?.offset,
+    });
 }
 
 /**
  * Open the floating-window interface on a message (defaults to the latest).
  */
 export function openOverlayMode(index = undefined) {
-    const target = resolveSelectionTarget(index);
-    if (!target.ok) return;
-
-    const { raw, message, targetIndex } = target;
-    let boundaries = target.boundaries;
+    const ctx = getCtx();
+    const settings = getSettings(ctx);
+    const eligible = isEligibleTarget(ctx, index);
+    if (!eligible.ok) {
+        notify('warning', eligible.reason);
+        return;
+    }
+    const raw = String(eligible.message.mes ?? '');
+    let boundaries = getBoundaries(raw, settings.boundaries);
+    if (!boundaries.length) {
+        notify('warning', 'No safe insertion points were found in this message.');
+        return;
+    }
     // @see docs/RATIONALE.md#VIS-01
-    const container = renderInstrumented(raw, boundaries, message, targetIndex);
+    const container = renderInstrumented(raw, boundaries, eligible.message, eligible.targetIndex);
     if (container) {
         const statuses = classifyBoundaries(raw, boundaries, container);
         boundaries = boundaries.filter((_, i) => statuses[i] !== 'hidden');
@@ -43,10 +64,11 @@ export function openOverlayMode(index = undefined) {
         return;
     }
     closeOverlay();
-    buildOverlay({ ...target, boundaries });
+    buildOverlay({ ctx, settings, raw, boundaries, targetIndex: eligible.targetIndex, message: eligible.message });
 }
 
-function buildOverlay({ settings, raw, boundaries, targetIndex, chatId, message }) {
+function buildOverlay({ ctx, settings, raw, boundaries, targetIndex, message }) {
+    const chatId = getCurrentChatId(ctx);
     const backdrop = el('div', 'intercede-backdrop');
     const panel = el('div', 'intercede-panel');
     panel.setAttribute('role', 'dialog');
@@ -174,7 +196,7 @@ function previewBoundary(index, on) {
 function selectBoundary(index, draft = null) {
     const state = overlayState;
     if (!state) return;
-    saveDraftFromState(state);
+    saveDraftFromComposer();
     state.composer?.remove();
     state.composer = null;
     state.selectedIndex = index;
@@ -186,20 +208,55 @@ function selectBoundary(index, draft = null) {
         node.classList.toggle('intercede-cut', i > index);
     });
 
-    const composer = buildComposer({
-        state,
-        draft: draft ?? getDraft(state.chatId, state.targetIndex),
-        onCommit: commitSelection,
-        onCancel: () => {
-            saveDraftFromState(overlayState);
-            clearSelection();
-        },
-    });
+    const stored = draft ?? getDraft(state.chatId, state.targetIndex);
+    const composer = buildComposer(stored);
     state.boundaryNodes[index].after(composer);
     state.composer = composer;
     const textarea = composer.querySelector('textarea');
     textarea.focus();
     composer.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function buildComposer(draft) {
+    const state = overlayState;
+    const composer = el('div', 'intercede-composer');
+
+    const textarea = document.createElement('textarea');
+    textarea.className = 'text_pole intercede-composer-text';
+    textarea.placeholder = 'Your response at this point…';
+    textarea.rows = 3;
+    if (draft?.text) textarea.value = draft.text;
+    textarea.addEventListener('input', saveDraftFromComposer);
+
+    const controls = el('div', 'intercede-composer-controls');
+
+    const select = document.createElement('select');
+    select.className = 'text_pole intercede-mode-select';
+    for (const mode of Object.values(REWRITE_MODES)) {
+        const option = document.createElement('option');
+        option.value = mode;
+        option.textContent = REWRITE_MODE_LABELS[mode];
+        select.appendChild(option);
+    }
+    select.value = draft?.mode ?? state.settings.defaultMode ?? REWRITE_MODES.ADAPTIVE;
+
+    const commitButton = el('button', 'menu_button intercede-primary', 'Intercede');
+    commitButton.type = 'button';
+    commitButton.title = 'Commit (Ctrl+Enter)';
+    commitButton.addEventListener('click', commitSelection);
+
+    const cancelButton = el('button', 'menu_button', 'Cancel');
+    cancelButton.type = 'button';
+    cancelButton.addEventListener('click', () => {
+        saveDraftFromComposer();
+        clearSelection();
+    });
+
+    controls.append(select, commitButton, cancelButton);
+    composer.append(textarea, controls);
+    composer.appendChild(el('div', 'intercede-composer-hint',
+        'Everything above stays exactly as written. Everything dimmed below is rewritten around your response.'));
+    return composer;
 }
 
 function clearSelection() {
@@ -213,5 +270,29 @@ function clearSelection() {
 }
 
 async function commitSelection() {
-    await commitFromState(overlayState, closeOverlay);
+    const state = overlayState;
+    if (!state || state.selectedIndex === null || !state.composer) return;
+
+    const textarea = state.composer.querySelector('textarea');
+    const insertionText = textarea.value.trim();
+    if (!insertionText) {
+        notify('warning', 'Write your response first.');
+        textarea.focus();
+        return;
+    }
+    const rewriteMode = state.composer.querySelector('select').value;
+    const boundary = state.boundaries[state.selectedIndex];
+    saveDraftFromComposer();
+
+    await confirmAndCommit({
+        chatId: state.chatId,
+        targetIndex: state.targetIndex,
+        raw: state.raw,
+        boundary,
+        insertionText,
+        rewriteMode,
+        message: state.message,
+        settings: state.settings,
+        closeMode: closeOverlay,
+    });
 }
