@@ -692,6 +692,18 @@ The tallies are the discriminator. Dry runs climbing alongside a stuck open reco
 at [LEASE-08](#LEASE-08); unmatched ends point at a host emitting ends we never saw start;
 reconciliations climbing means the counter is leaking and the host is covering for it.
 
+`parserBuild` answers a different question: **which build is actually loaded?**
+`manifest.json` sets `auto_update: false`, and a version string is reported just as
+confidently by a stale checkout as by a current one — during P1 runtime testing three
+different parser generations all announced `0.5.0`, and several findings turned out to be
+an old checkout rather than live defects. So the field is not a claim, it is a
+measurement: `probeParserBuild()` runs the real parser over fixtures whose behaviour
+changed between builds and reports what it observes. A tester pasting diagnostics can see
+at a glance whether reference links, backslash parity, intraword emphasis, list
+continuations and blank-line paragraphs are present in the code that is answering.
+
+Bump the version too, of course. The probe is what survives forgetting to.
+
 ---
 
 # Validation — `VAL-*`
@@ -1008,12 +1020,14 @@ const PARAGRAPH_SEPARATOR_REGEX = /\n[^\S\n]*(?:\n[^\S\n]*)+/g;
 The trailing `+` is load-bearing. With `*` in its place — which is what shipped through
 v0.5 — a single newline counted as a paragraph break, and two things followed:
 
-- `getBlocks()` degraded into a line-splitter, which defeated `insideOpenQuote()`. A
-  quotation spanning two lines was split across blocks, so neither half saw an odd
-  number of quote marks and a cut was offered *inside* the quote.
 - Paragraph granularity stopped meaning anything: on a message written with single
   newlines it offered a boundary at every line, which is sentence-ish behaviour under
   the wrong label.
+- `getBlocks()` degraded into a line-splitter, so quotation state was computed per line
+  rather than per paragraph. Under [SEG-10](#SEG-10) a cut inside a quotation is now
+  offered deliberately, so this no longer changes which boundaries appear — but the
+  block a risk is *assessed* against is still the paragraph, and a line-splitter would
+  assess the wrong text.
 
 A single newline is now a line break within a paragraph. It still yields a *sentence*
 boundary wherever a sentence actually ends there — `Intl.Segmenter` breaks after a line
@@ -1050,9 +1064,14 @@ Three rules follow CommonMark rather than intuition, and each was a real hole:
 - **`*` may open inside a word, `_` may not.** `foo*bar*baz` renders as emphasis;
   `snake_case_name` does not. A lookbehind that excluded a preceding word character for
   both — which is what the first version did — left intraword emphasis unprotected.
-- **An escaped delimiter is text.** `ESCAPED` consumes `\*` as one unit, so it neither
-  opens a span nor closes one early. Without it, `*Escaped \* here. More.*` ended at the
-  escape and every cut in the rest of the real span became legal.
+- **An escaped delimiter is text — and escaping is a parity question.** `ESCAPED`
+  consumes `\*` as one unit inside a span, and `NOT_ESCAPED` guards every delimiter
+  position outside one. Parity is what makes it correct: `\*` is a literal asterisk, but
+  `\\*` is a literal backslash followed by a *live* delimiter, and `\\\*` is escaped
+  again. A plain `(?<!\\)` sees only the nearest backslash, so it read every even run as
+  an escape and dropped the emphasis entirely — under-protection, the direction that
+  hands out a broken cut. The assertion is
+  `(?<!(?<!\\)(?:\\\\)*\\)`: no odd run of backslashes ends here.
 - **`***` is matched before `**`.** Otherwise the `**` pattern stops one delimiter short
   and leaves a cut legal *between* the second and third asterisk.
 
@@ -1104,14 +1123,56 @@ silently remove boundaries from any message that brackets anything, which is a l
 invisible cost paid for a rare form. The consequence is stated rather than hidden: a
 shortcut reference can be cut.
 
+<a id="SEG-10"></a>
+### SEG-10 — Dialogue is offered, and the risk is reported
+**Sites:** `src/segmentation.js` › `BAD_SENTENCE_START_REGEX`, `describeCutRisks()`, `insideOpenQuote()`; `src/ui/commit-flow.js` › `confirmAndCommit()`
+**Related:** [SEG-04](#SEG-04), [SEG-02](#SEG-02), [UI-03](#UI-03)
+
+The first version refused any cut that sat inside a quotation, and any cut whose next
+sentence began with a quote mark. Both rules are defensible in the abstract and wrong for
+this product. Runtime testing on real roleplay made it obvious: in
+
+```text
+A small shrug inside the sweater. "It's not going to work like that."
+```
+
+*every* boundary a user would actually want was suppressed — the one before the dialogue,
+because the next sentence starts with `"`, and the ones inside it, because the quotation
+is open. Dialogue is the substance of roleplay, not an edge case, and an extension whose
+whole purpose is to respond *inside* a message cannot decline to cut where the talking
+happens.
+
+So the two filters moved rather than disappearing. The parser offers the boundary;
+`describeCutRisks()` inspects the preserved prefix and the confirmation screen says what
+the cut leaves dangling — an open quotation, an unclosed Markdown delimiter. The user
+decides.
+
+This is a deliberate asymmetry with [SEG-02](#SEG-02), and the distinction is what makes
+both coherent:
+
+- **Structure stays hard-protected.** Code fences, inline code, links, macros, HTML tags,
+  emphasis pairs, list runs: cutting these produces text that no longer *means* what it
+  says — a dangling `](`, half a macro, a list that renumbers itself.
+- **Style is advisory.** An open quotation still renders as text. It reads oddly, it is
+  usually not what the user wanted, and it is occasionally exactly what they wanted
+  (interrupting a speaker mid-sentence is a legitimate thing to do to a scene).
+
+Only the prefix's final block is assessed: anything before a blank line is closed as far
+as rendering is concerned. The risks are reported whenever the confirmation is shown, and
+they are not gated behind `warnExtensions` — that setting is about *other extensions*,
+while these describe this cut.
+
 <a id="SEG-04"></a>
 ### SEG-04 — Sentence heuristics
 **Sites:** `src/segmentation.js` › `segmentSentences()`, `ABBREVIATION_REGEX`, `BAD_SENTENCE_START_REGEX`, `insideOpenQuote()`
 
 `Intl.Segmenter` when available, a punctuation regex otherwise. A candidate is rejected
-when it follows an abbreviation or single initial, when the next sentence starts with
-continuation punctuation, a closing quote, or a lowercase letter, or when it sits inside
-an unfinished quotation.
+when it follows an abbreviation or single initial, or when the next sentence starts with
+continuation punctuation, a *closing* quote, or a lowercase letter — all of which mean the
+segmenter split something that was not a sentence.
+
+Opening quotes and unfinished quotations are no longer rejection reasons; see
+[SEG-10](#SEG-10) for why that filter moved from the parser to the confirmation.
 
 <a id="SEG-05"></a>
 ### SEG-05 — Deduplication prefers paragraphs
@@ -1262,6 +1323,13 @@ draft the user cannot use anyway, instead of restoring one onto the wrong messag
 `resolveSelectionTarget()` computes the hash once, next to the boundaries it belongs
 with, so both interfaces key drafts identically by construction.
 
+Every path in or out of the map goes through `draftKey()` with the same identity object —
+storing, reading, and *forgetting after a successful commit*. The commit path is the easy
+one to miss, and missing it fails silently: the delete computes a key nothing was stored
+under, so the map grows and the stale draft resurfaces the next time that message is
+interceded. There is a test for the clearing path specifically, because nothing else
+observes it.
+
 <a id="UI-06"></a>
 ### UI-06 — Foreign continuation metadata is surfaced, not blocked
 **Sites:** `src/ui/commit-flow.js` › `detectForeignContinuationData()`, `detectMemoryExtensions()`
@@ -1290,6 +1358,15 @@ appear once it confirms — better a brief delay than a control that fails when 
 Buttons are injected into the message template so every future message carries them, and
 into already-rendered messages on init. Visibility is kept in sync with chat life-cycle
 events.
+
+Those events are not sufficient on their own, and the gap is easy to miss because the
+slash commands keep working while the controls are absent. `GENERATION_ENDED` and
+`CHARACTER_MESSAGE_RENDERED` both fire *before* the transaction commits, so the refresh
+they trigger runs while `getCommittedTipRecord()` still returns nothing — the controls
+stay hidden, and nothing refreshed afterwards until some unrelated event happened along.
+The refresh is therefore also driven by [`intercede_invalidated`](#CFG-02), which by
+construction fires *after* every canonical change. It is the one signal whose timing is
+tied to the commit rather than to the generation.
 
 <a id="UI-09"></a>
 ### UI-09 — Chain-aware wording

@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { getBoundaries, getProtectedRanges, isOffsetProtected, splitAtOffset } from '../src/segmentation.js';
+import { describeCutRisks, getBoundaries, getProtectedRanges, isOffsetProtected, splitAtOffset } from '../src/segmentation.js';
 
 /** Offsets only, for readability. */
 const offsets = (text, granularity = 'sentence') =>
@@ -54,14 +54,69 @@ describe('paragraph boundaries', () => {
         expect(offsets(text, 'paragraph')).toEqual([6]);
     });
 
-    it('keeps a single-newline message as one block, so its quote spans lines', () => {
-        // With a single newline as a separator this block would be split in two,
-        // each half seeing a balanced quote count, and the cut inside the
-        // quotation would be offered.
+    it('assesses a multi-line quotation as one block', () => {
+        // A line-splitter would judge the risk of a cut against half a
+        // paragraph. @see docs/RATIONALE.md#SEG-03
         const text = '"I never said that,\nand you know it," she snapped. He looked away.';
 
-        expect(offersCutBefore(text, 'and you know it')).toBe(false);
         expect(offersCutBefore(text, 'He looked away')).toBe(true);
+        // A single newline does not close the quotation: the risk is assessed
+        // across it, which a line-splitter would have missed.
+        const midQuote = text.slice(0, text.indexOf('and you know it'));
+        expect(describeCutRisks(midQuote)[0]).toMatch(/quotation/i);
+    });
+});
+
+describe('dialogue boundaries', () => {
+    // @see docs/RATIONALE.md#SEG-10
+    it('offers the boundary before an opening quotation', () => {
+        const text = 'A small shrug inside the sweater. "It\'s not going to work like that."';
+
+        expect(offersCutBefore(text, '"It\'s not going')).toBe(true);
+    });
+
+    it('offers boundaries inside dialogue', () => {
+        const text = '"Right now you don\'t have one. That\'s why people are nodding."';
+
+        expect(offersCutBefore(text, 'That\'s why')).toBe(true);
+    });
+
+    it('still refuses a boundary before a closing quote', () => {
+        // Here the segmenter breaks between the sentence and the quote mark that
+        // ends the speech; cutting there strands the delimiter in the rewrite.
+        const text = '"He said it plainly. I heard him." She looked away.';
+
+        expect(offersCutBefore(text, '" She looked')).toBe(false);
+        expect(offersCutBefore(text, 'She looked away')).toBe(true);
+    });
+
+    describe('cut risks', () => {
+        it('reports an open quotation', () => {
+            const risks = describeCutRisks('She turned. "This is not over.');
+
+            expect(risks).toHaveLength(1);
+            expect(risks[0]).toMatch(/quotation/i);
+        });
+
+        it('reports an unclosed emphasis delimiter', () => {
+            const risks = describeCutRisks('He froze. *She did not.');
+
+            expect(risks).toHaveLength(1);
+            expect(risks[0]).toMatch(/delimiter/i);
+        });
+
+        it('says nothing about a clean cut', () => {
+            expect(describeCutRisks('She turned. *"This is over,"* he said.')).toEqual([]);
+        });
+
+        it('ignores an escaped delimiter', () => {
+            expect(describeCutRisks('The price is 5 \\* 3 dollars.')).toEqual([]);
+        });
+
+        it('only assesses the last paragraph', () => {
+            // The quotation two paragraphs up is somebody else's problem.
+            expect(describeCutRisks('"An open quote\n\nA clean closing paragraph.')).toEqual([]);
+        });
     });
 });
 
@@ -143,6 +198,46 @@ describe('emphasis protection', () => {
         expect(text.slice(emphasis[0].start, emphasis[0].end))
             .toBe('*Escaped \\* here. Sentence one.*');
         expect(isOffsetProtected(text.indexOf(' Sentence one.'), ranges)).toBe(true);
+    });
+
+    describe('backslash parity', () => {
+        // `\*` is a literal asterisk; `\\*` is a literal backslash followed by a
+        // live delimiter. Only an odd run escapes. @see docs/RATIONALE.md#SEG-07
+        const BS = String.fromCharCode(92);
+
+        it.each([
+            [0, true],
+            [1, false],
+            [2, true],
+            [3, false],
+            [4, true],
+        ])('%i backslashes before the opener → emphasis recognised: %s', (count, recognised) => {
+            const text = `He said ${BS.repeat(count)}*one. two* aloud.`;
+            const emphasis = getProtectedRanges(text).filter(range => range.kind === 'emphasis');
+
+            expect(emphasis.length > 0).toBe(recognised);
+        });
+
+        it.each([
+            [0, true],
+            [1, false],
+            [2, true],
+        ])('%i backslashes before the closer → closes there: %s', (count, closesHere) => {
+            const text = `*one. two${BS.repeat(count)}* and *more here*`;
+            const emphasis = getProtectedRanges(text).filter(range => range.kind === 'emphasis');
+            const firstSpan = text.slice(emphasis[0].start, emphasis[0].end);
+
+            // When the closer is escaped the span runs on to a later delimiter,
+            // which over-protects — the safe direction.
+            expect(firstSpan === `*one. two${BS.repeat(count)}*`).toBe(closesHere);
+        });
+
+        it('keeps the cut after an even-run delimiter available', () => {
+            const text = `A backslash ${BS}${BS}*and emphasis* here. Then more.`;
+
+            expect(offersCutBefore(text, 'Then more')).toBe(true);
+            expect(isOffsetProtected(text.indexOf('and emphasis'), getProtectedRanges(text))).toBe(true);
+        });
     });
 
     it('protects a bold-italic run to its last delimiter', () => {

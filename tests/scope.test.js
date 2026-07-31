@@ -145,6 +145,48 @@ describe('intercede_invalidated', () => {
     });
 });
 
+describe('the Undo/Compare controls', () => {
+    /**
+     * The controls are class-driven, and the class depends on a metadata record
+     * that does not exist yet while the host's own events are firing. Only the
+     * invalidation event lands after the commit, which is what this asserts.
+     * @see docs/RATIONALE.md#UI-08
+     */
+    it('appears on the tail after a commit, without any further host event', async () => {
+        vi.resetModules();
+        const { ctx } = installFakeSillyTavern({ chat: baseChat() });
+        document.body.innerHTML = `
+            <div id="chat">
+                <div class="mes" mesid="0"><div class="mes_buttons"><div class="extraMesButtons"></div></div></div>
+                <div class="mes" mesid="1"><div class="mes_buttons"><div class="extraMesButtons"></div></div></div>
+            </div>
+            <div id="extensionsMenu"></div>`;
+
+        const { initLease } = await import('../src/lease.js');
+        const transaction = await import('../src/transaction.js');
+        const { INTERCEDE_EVENTS } = await import('../src/constants.js');
+        const { initMessageButtons, refreshButtonVisibility } = await import('../src/ui/message-button.js');
+        initLease();
+        initMessageButtons();
+        ctx.eventSource.on(INTERCEDE_EVENTS.INVALIDATED, refreshButtonVisibility);
+
+        ctx.generate = vi.fn(respondWith(ctx, 'Revised continuation.'));
+        // The fake host does not re-render, so mirror the two new messages.
+        const result = await runTransaction(transaction, { ctx, offset: CUT_OFFSET });
+        const chatNode = document.getElementById('chat');
+        for (const index of [2, 3]) {
+            chatNode.insertAdjacentHTML('beforeend',
+                `<div class="mes" mesid="${index}"><div class="mes_buttons"><div class="extraMesButtons"></div></div></div>`);
+        }
+        await ctx.eventSource.emit(INTERCEDE_EVENTS.INVALIDATED, { transactionId: result.transactionId });
+        await vi.waitFor(() => {
+            expect(document.querySelector('#chat .mes[mesid="3"]').classList.contains('intercede-committed')).toBe(true);
+        });
+
+        expect(await transaction.canUndoTip()).toBe(true);
+    });
+});
+
 describe('drafts', () => {
     // @see docs/RATIONALE.md#UI-05
     async function drafts() {
@@ -160,6 +202,31 @@ describe('drafts', () => {
         setDraft(target, { text: 'My response.', boundaryOffset: CUT_OFFSET });
 
         expect(getDraft({ ...target })).toMatchObject({ text: 'My response.' });
+    });
+
+    it('forgets the draft once the intercession commits', async () => {
+        // The commit path deletes by key too, and a signature that drifts from
+        // draftKey() fails silently: the map keeps growing and a stale draft
+        // reappears the next time the same text is interceded.
+        const { ctx } = await setup();
+        ctx.generate = vi.fn(respondWith(ctx, 'Revised continuation.'));
+        const { confirmAndCommit, getDraft, setDraft } = await import('../src/ui/commit-flow.js');
+        const target = { chatId: 'chat-1', targetIndex: 1, raw: ORIGINAL };
+        setDraft(target, { text: 'My response.', boundaryOffset: CUT_OFFSET });
+
+        const committed = await confirmAndCommit({
+            ...target,
+            boundary: { offset: CUT_OFFSET, type: 'sentence' },
+            insertionText: 'My response.',
+            rewriteMode: 'adaptive',
+            message: ctx.chat[1],
+            settings: { confirmBeforeCommit: false, compareAfterCommit: false, warnExtensions: false },
+            closeMode: () => {},
+        });
+
+        expect(committed).toBe(true);
+        expect(ctx.chat).toHaveLength(4);
+        expect(getDraft(target)).toBeNull();
     });
 
     it('does not restore it onto different text at the same index', async () => {

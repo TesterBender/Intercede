@@ -26,6 +26,19 @@ const WITHIN_BLOCK = String.raw`(?:(?!\n[^\S\n]*\n)[\s\S])`;
  */
 const ESCAPED = String.raw`\\[^\n]`;
 
+/**
+ * Zero-width assertion: this position is not preceded by an *odd* run of
+ * backslashes, i.e. the delimiter starting here is not escaped.
+ *
+ * Parity is the whole point. `\*` is a literal asterisk, but `\\*` is a literal
+ * backslash followed by a live delimiter, and `\\\*` is escaped again. A plain
+ * `(?<!\\)` sees only the nearest backslash, so it reads every even run as an
+ * escape and silently drops real emphasis — under-protection, which is the
+ * direction that hands the user a broken cut.
+ * @see docs/RATIONALE.md#SEG-07
+ */
+const NOT_ESCAPED = String.raw`(?<!(?<!\\)(?:\\\\)*\\)`;
+
 /** Body of an emphasis span: escapes first, then anything that is not `delim`. */
 const spanBody = (delim) => String.raw`(?:${ESCAPED}|(?!${delim})${WITHIN_BLOCK})+?`;
 
@@ -40,16 +53,16 @@ const spanBody = (delim) => String.raw`(?:${ESCAPED}|(?!${delim})${WITHIN_BLOCK}
  */
 const EMPHASIS_PATTERNS = [
     // ~~strikethrough~~
-    String.raw`(?<!\\)~~(?!\s)${spanBody('~~')}(?<![\s\\])~~`,
+    String.raw`${NOT_ESCAPED}~~(?!\s)${spanBody('~~')}(?<!\s)${NOT_ESCAPED}~~`,
     // ***bold italic*** first: the `**` pattern alone would stop one delimiter
     // short and leave a cut legal between the second and third asterisk.
-    String.raw`(?<![\\*])\*\*\*(?!\s)${spanBody(String.raw`\*\*\*`)}(?<![\s\\])\*\*\*`,
+    String.raw`(?<!\*)${NOT_ESCAPED}\*\*\*(?!\s)${spanBody(String.raw`\*\*\*`)}(?<!\s)${NOT_ESCAPED}\*\*\*`,
     // **strong** and __strong__
-    String.raw`(?<![\\*])\*\*(?!\s)${spanBody(String.raw`\*\*`)}(?<![\s\\])\*\*`,
-    String.raw`(?<![\w_\\])__(?!\s)${spanBody('__')}(?<![\s\\])__(?![\w_])`,
+    String.raw`(?<!\*)${NOT_ESCAPED}\*\*(?!\s)${spanBody(String.raw`\*\*`)}(?<!\s)${NOT_ESCAPED}\*\*`,
+    String.raw`(?<![\w_])${NOT_ESCAPED}__(?!\s)${spanBody('__')}(?<!\s)${NOT_ESCAPED}__(?![\w_])`,
     // *emphasis* and _emphasis_
-    String.raw`(?<![\\*])\*(?!\s)${spanBody(String.raw`\*`)}(?<![\s\\])\*(?!\*)`,
-    String.raw`(?<![\w_\\])_(?!\s)${spanBody('_')}(?<![\s\\])_(?![\w_])`,
+    String.raw`(?<!\*)${NOT_ESCAPED}\*(?!\s)${spanBody(String.raw`\*`)}(?<!\s)${NOT_ESCAPED}\*(?!\*)`,
+    String.raw`(?<![\w_])${NOT_ESCAPED}_(?!\s)${spanBody('_')}(?<!\s)${NOT_ESCAPED}_(?![\w_])`,
 ].map(source => new RegExp(source, 'g'));
 
 /** A line that opens a bullet or ordered list item. */
@@ -191,8 +204,14 @@ function getBlocks(text) {
 /** Abbreviations that must not end a sentence. @see docs/RATIONALE.md#SEG-04 */
 const ABBREVIATION_REGEX = /(?:\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|Lt|Sgt|Capt|Col|Gen|Rev|Hon|vs|etc|approx|dept|est|Fig|No|Vol|Ch|pp?)\.|\be\.g\.|\bi\.e\.|\b[A-Z]\.)$/;
 
-/** Characters a sentence must not begin with (continuation punctuation, closing quotes). */
-const BAD_SENTENCE_START_REGEX = /^["'”’)\]}»,.;:!?…—–-]|^[a-z]/;
+/**
+ * Characters a sentence must not begin with: continuation punctuation and
+ * *closing* quotes. Opening quotes are deliberately absent — dialogue is where
+ * roleplay wants to cut, so `He shrugged. "It's fine."` offers the boundary
+ * before the quotation instead of suppressing it.
+ * @see docs/RATIONALE.md#SEG-10
+ */
+const BAD_SENTENCE_START_REGEX = /^[”’)\]}»,.;:!?…—–-]|^[a-z]/;
 
 /**
  * True when `offset` (relative to the block) sits inside an unfinished quotation
@@ -268,7 +287,8 @@ export function getBoundaries(text, granularity = 'sentence') {
                 if (ABBREVIATION_REGEX.test(trimmed)) continue;
                 const nextText = blockText.slice(relStart).replace(/^\s+/, '');
                 if (!nextText || BAD_SENTENCE_START_REGEX.test(nextText)) continue;
-                if (insideOpenQuote(blockText, trimmed.length)) continue;
+                // A cut inside dialogue is offered, not suppressed — the risk is
+                // reported at confirmation instead. @see docs/RATIONALE.md#SEG-10
                 boundaries.push({ offset, type: BOUNDARY_TYPES.SENTENCE });
             }
         }
@@ -296,6 +316,43 @@ export function getBoundaries(text, granularity = 'sentence') {
         }
         return true;
     });
+}
+
+/**
+ * What a cut here leaves dangling in the preserved prefix.
+ *
+ * The parser offers dialogue boundaries rather than hiding them, so this is the
+ * other half of that bargain: the user is told what they are about to do
+ * instead of being prevented from doing it. Only the prefix's final block
+ * matters — anything before a blank line is closed as far as rendering cares.
+ *
+ * @see docs/RATIONALE.md#SEG-10
+ * @param {string} prefix the preserved text, as `splitAtOffset()` returns it
+ * @returns {string[]} human-readable descriptions, empty when the cut is clean
+ */
+export function describeCutRisks(prefix) {
+    const risks = [];
+    const separators = [...String(prefix ?? '').matchAll(PARAGRAPH_SEPARATOR_REGEX)];
+    const last = separators[separators.length - 1];
+    const block = last ? prefix.slice(last.index + last[0].length) : String(prefix ?? '');
+    if (!block) return risks;
+
+    if (insideOpenQuote(block, block.length)) {
+        risks.push('This cut leaves a quotation open — the closing quote mark is in the rewritten part.');
+    }
+
+    // Blank out everything that closed properly, then see what delimiters are
+    // left over. Escapes go first so `\*` is never counted as one.
+    let residue = block.replace(new RegExp(ESCAPED, 'g'), '');
+    for (const range of getProtectedRanges(residue)) {
+        if (range.kind === 'emphasis' || range.kind === 'inline-code' || range.kind === 'fence') {
+            residue = residue.slice(0, range.start) + ' '.repeat(range.end - range.start) + residue.slice(range.end);
+        }
+    }
+    if (/\*\*|~~|[*_`]/.test(residue)) {
+        risks.push('This cut leaves a Markdown delimiter unclosed, so the preserved text may render oddly.');
+    }
+    return risks;
 }
 
 /**

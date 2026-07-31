@@ -6,7 +6,7 @@
 
 import { createAnchor } from '../anchors.js';
 import { REWRITE_MODE_LABELS } from '../constants.js';
-import { splitAtOffset } from '../segmentation.js';
+import { describeCutRisks, splitAtOffset } from '../segmentation.js';
 import { getCtx } from '../stcontext.js';
 import { getChainPosition, IntercedeTransaction } from '../transaction.js';
 import { el, hashText, notify, truncate } from '../utils.js';
@@ -96,7 +96,10 @@ export async function confirmAndCommit({ chatId, targetIndex, raw, boundary, ins
 
     if (settings.confirmBeforeCommit) {
         const ctx = getCtx();
-        const warnings = [];
+        // Structural risks are always reported: they describe this cut, not the
+        // environment, and the parser now offers cuts it used to hide.
+        // @see docs/RATIONALE.md#SEG-10
+        const warnings = describeCutRisks(prefix);
         if (settings.warnExtensions) {
             const foreign = detectForeignContinuationData(message);
             if (foreign.length) {
@@ -141,7 +144,9 @@ export async function confirmAndCommit({ chatId, targetIndex, raw, boundary, ins
     const transaction = new IntercedeTransaction({ targetIndex, anchor, insertionText, rewriteMode });
     try {
         const result = await transaction.run();
-        drafts.delete(draftKey(chatId, targetIndex));
+        // Same identity the draft was stored under — the text it was written
+        // against, not just its position. @see docs/RATIONALE.md#UI-05
+        setDraft({ chatId, targetIndex, raw }, null);
         notify('success', 'Intercession committed. Swipe the new continuation for other adaptations, intercede it again to answer inside it, or /intercede undo to restore.');
         for (const warning of result.warnings) {
             notify('warning', warning, { timeOut: 8000 });
