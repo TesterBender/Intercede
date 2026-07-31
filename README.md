@@ -143,14 +143,10 @@ Interceding mutates canonical history, so every operation runs as a transaction:
 Custom events (`intercede_before_commit`, `intercede_committed`, `intercede_rolled_back`,
 `intercede_undone`) are emitted through the SillyTavern `eventSource` so
 memory/summary/timeline extensions can invalidate derived state. `intercede_invalidated`
-fires in addition to each of those outcomes (and after recovery restores a snapshot), so a
-listener that only needs to know that history moved can subscribe to that one event. Its
-payload carries `fromIndex` as well as `affectedMessageIds`: an intercession inserts and
-removes messages, so every index from `fromIndex` onward may have shifted position rather
-than merely changed text — invalidate from there, not just the listed ids. A `null`
-`fromIndex` means "assume everything". Note that `intercede_before_commit` is
-informational: listeners cannot veto a commit, and any history they change is detected by
-the re-validation above. A small console API is exposed at `window.Intercede`.
+is declared but not yet emitted — do not subscribe to it expecting it to fire. Note that
+`intercede_before_commit` is informational: listeners cannot veto a commit, and any
+history they change is detected by the re-validation above. A small console API is exposed
+at `window.Intercede`.
 
 ## Limitations (v0.5)
 
@@ -161,15 +157,10 @@ the re-validation above. A small console API is exposed at `window.Intercede`.
   newest-first; an earlier link cannot be undone without undoing the ones above it.
 - Undo snapshots are stored in this browser's storage and do not travel with exported chats
   (deliberate: no invisible chat-file inflation).
-- No cutting inside code fences, inline code, links, HTML tags, macros, unfinished quotes,
-  paired Markdown emphasis (`**bold**`, `_italic_`, `~~strike~~`), or a run of list items
-  (deliberate: those boundaries are unsafe). A paragraph boundary requires a blank line, so
-  a message written with single newlines between its lines offers paragraph boundaries only
-  where a blank line actually appears — switch to "Paragraphs and sentences" for those.
-- Switching Intercede off in the settings stops new intercessions everywhere (wand, Alt+I,
-  the message button, bare `/intercede`) but deliberately leaves `/intercede undo`,
-  `compare`, `recover`, and `finalize` working, so turning it off can never strand a
-  committed intercession.
+- No cutting inside code fences, inline code, links, HTML tags, macros, or unfinished quotes
+  (deliberate: those boundaries are unsafe). Paired Markdown emphasis (`**bold**`,
+  `_italic_`, `~~strike~~`) is **not** yet protected, and paragraph mode currently offers a
+  boundary at any line break rather than only at blank lines — both are known and queued.
 - An intercession that another extension disturbs mid-generation is rolled back rather than
   repaired. That is deliberate: the alternative is guessing which messages are whose.
 
@@ -222,7 +213,6 @@ src/transaction.js           the atomic transaction: snapshot → mutate → gen
                              validate → commit / rollback; undo; journal recovery
 src/events.js                custom Intercede events
 src/ui/open.js               interface dispatcher (in-place vs floating window, toggle)
-src/ui/selection.js          plumbing both selection modes share: target, composer, commit
 src/ui/inline-mode.js        in-place selection: markers rendered over the live message
 src/ui/overlay.js            floating window: reading overlay, boundary chips, composer
 src/ui/visibility.js         boundary visibility vs display-only transforms (§9.5)

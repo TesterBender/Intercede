@@ -20,7 +20,6 @@ const UI_MODULES = [
     '../src/ui/open.js',
     '../src/ui/modal.js',
     '../src/ui/compare.js',
-    '../src/ui/selection.js',
     '../src/ui/overlay.js',
     '../src/ui/inline-mode.js',
     '../src/ui/message-button.js',

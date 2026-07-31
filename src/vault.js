@@ -122,23 +122,14 @@ export async function vaultKeys() {
 
 /**
  * Delete vault records older than ttlDays. ttlDays <= 0 keeps everything.
- *
- * A record's own `state` says what it was for; it cannot say whether anything
- * still points at it, because the journal and the chat metadata live elsewhere.
- * That is what `protectedKeys` carries — see `cleanupSnapshots()`, which is the
- * caller every entry point should use.
- *
  * @see docs/RATIONALE.md#VAULT-02 which records are protected, and why
- * @param {number} ttlDays
- * @param {Set<string>} [protectedKeys] keys something still references
  * @returns {Promise<number>} number of records removed
  */
-export async function cleanupVault(ttlDays, protectedKeys = new Set()) {
+export async function cleanupVault(ttlDays) {
     if (!ttlDays || ttlDays <= 0) return 0;
     const cutoff = Date.now() - ttlDays * 24 * 60 * 60 * 1000;
     let removed = 0;
     for (const key of await vaultKeys()) {
-        if (protectedKeys.has(key)) continue;
         const record = await vaultGet(key);
         if (!record?.createdAt || record.createdAt >= cutoff) continue;
         if (record.state === 'committed' && !record.finalizedAt) continue;

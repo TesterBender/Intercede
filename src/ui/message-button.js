@@ -30,12 +30,6 @@ export function refreshButtonVisibility() {
     const settings = getSettings(ctx);
     document.querySelectorAll('#chat .mes.intercede-eligible').forEach(node => node.classList.remove('intercede-eligible'));
     document.querySelectorAll('#chat .mes.intercede-committed').forEach(node => node.classList.remove('intercede-committed'));
-
-    // @see docs/RATIONALE.md#CFG-03 — the wand entry is added once at init, so
-    // the switch has to be reflected here rather than at construction.
-    const wandItem = document.getElementById('intercede_wand_item');
-    if (wandItem) wandItem.style.display = settings.enabled ? '' : 'none';
-
     if (!settings.enabled || !settings.showButton) return;
 
     const eligible = isEligibleTarget(ctx);
