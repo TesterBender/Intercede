@@ -1,9 +1,7 @@
 /**
  * Post-generation validation (§12.6) and quality heuristics (§17.6, §17.7).
  *
- * Structural corruption is fatal (triggers rollback). Stylistic problems —
- * prefix repetition, ignored insertion, meta-commentary — produce warnings only:
- * ambiguous prose is shown to the user, never silently rejected or rewritten.
+ * @see docs/RATIONALE.md#VAL-01 structural is fatal, stylistic only warns
  */
 
 import { isOwnedMessage, OWNED_ROLE } from './ownership.js';
@@ -12,10 +10,9 @@ import { normalizeForComparison } from './utils.js';
 /**
  * Structural validation against proven ownership (§5.4, INV-02/INV-03/INV-04).
  *
- * Every message is checked twice: the object reference the transaction captured
- * must still be where it belongs, and its marker must still name this
- * transaction. An unexpected chat length is fatal, not a warning — the previous
- * behaviour let a foreign message be adopted as the continuation.
+ * @see docs/RATIONALE.md#VAL-01 the two independent checks per message
+ * @see docs/RATIONALE.md#VAL-02 why an over-long chat is fatal
+ * @see docs/RATIONALE.md#VAL-03 prefix is compared byte-for-byte
  *
  * @param {object} params
  * @param {Array} params.chat
@@ -124,8 +121,7 @@ function wordTrigrams(text) {
 
 /**
  * Textual-overlap indicator between the discarded and revised suffixes (§17.6).
- * A Sørensen–Dice coefficient over word trigrams, as a rounded percentage.
- * This measures textual overlap only — it is not a claim about semantic fidelity.
+ * @see docs/RATIONALE.md#VAL-04 — overlap, NOT semantic fidelity
  */
 export function computePreservation(originalSuffix, revisedSuffix) {
     const a = wordTrigrams(originalSuffix);

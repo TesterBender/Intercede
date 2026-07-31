@@ -1,13 +1,15 @@
 /**
  * Discarded-suffix vault (§13.2) and crash-recovery journal (§19).
  *
- * The vault holds large snapshots (the complete original message object, the
- * discarded suffix, anchors) in browser-side storage, keyed
+ * The vault holds large snapshots in browser-side storage, keyed
  * `intercede:<chatId>:<transactionId>`, keeping canonical chat metadata small.
- *
  * The journal is a tiny synchronous localStorage record written before and after
- * every risky step, so a refresh or crash mid-transaction can be detected and
- * recovered on the next load.
+ * every risky step.
+ *
+ * @see docs/RATIONALE.md#VAULT-01 write, verify, then cache
+ * @see docs/RATIONALE.md#VAULT-02 age alone never removes a live snapshot
+ * @see docs/RATIONALE.md#JRN-01 strict variants throw instead of swallowing
+ * @see docs/RATIONALE.md#JRN-02 one global slot, so collisions must be refused
  */
 
 import { JOURNAL_KEY, SCHEMA_VERSION, TERMINAL_JOURNAL_STAGES, VAULT_PREFIX } from './constants.js';
@@ -43,9 +45,8 @@ export function vaultKeyFor(chatId, transactionId) {
  */
 
 /**
- * Best-effort write, used where a failure is not worth aborting for (enriching
- * an already-committed record). The cache is still only populated after the
- * durable write resolves.
+ * Best-effort write, for paths where failure is not worth aborting for.
+ * @see docs/RATIONALE.md#VAULT-03
  */
 export async function vaultPut(key, record) {
     const value = { schemaVersion: SCHEMA_VERSION, ...record };
@@ -56,12 +57,7 @@ export async function vaultPut(key, record) {
 
 /**
  * Durable write with round-trip verification (§7.3, INV-07).
- *
- * Order matters. The cache must never be populated before the backend confirms,
- * or a quota failure leaves a phantom record that reads as present until the
- * page is reloaded — at which point the snapshot the user was promised is gone.
- * A backend that resolves without persisting is caught by reading the value
- * back.
+ * @see docs/RATIONALE.md#VAULT-01 — the ordering here is load-bearing
  */
 export async function vaultPutStrict(key, record) {
     const value = { schemaVersion: SCHEMA_VERSION, ...record };
@@ -103,7 +99,7 @@ export async function vaultGet(key) {
     }
 }
 
-/** Synchronous cache-only read for hot paths (GENERATION_STARTED handlers). */
+/** Synchronous cache-only read for hot paths. @see docs/RATIONALE.md#VAULT-04 */
 export function vaultGetCached(key) {
     return cache.get(key) ?? null;
 }
@@ -126,11 +122,7 @@ export async function vaultKeys() {
 
 /**
  * Delete vault records older than ttlDays. ttlDays <= 0 keeps everything.
- *
- * A committed record that has not been explicitly finalized is the only copy of
- * the message Undo restores, so age alone must never remove it (IC-P1-004,
- * INV-10). Use finalizeVaultRecord() to give up undo deliberately.
- *
+ * @see docs/RATIONALE.md#VAULT-02 which records are protected, and why
  * @returns {Promise<number>} number of records removed
  */
 export async function cleanupVault(ttlDays) {
@@ -140,9 +132,6 @@ export async function cleanupVault(ttlDays) {
     for (const key of await vaultKeys()) {
         const record = await vaultGet(key);
         if (!record?.createdAt || record.createdAt >= cutoff) continue;
-        // A committed record backs an undo that is still offered; an abandoned
-        // one holds the only copy of the original text of a message the chat
-        // still shows half-applied. Neither may be removed by age alone.
         if (record.state === 'committed' && !record.finalizedAt) continue;
         if (record.state === 'abandoned' && !record.finalizedAt) continue;
 
@@ -201,10 +190,7 @@ export function clearJournal() {
 }
 
 // --- Strict variants, used on every path that precedes canonical mutation ----
-//
-// The journal is the only thing standing between a crash mid-transaction and an
-// unrecoverable chat. A write that silently failed is worse than no journal at
-// all, because the transaction proceeds believing it is protected. These throw.
+// @see docs/RATIONALE.md#JRN-01
 
 /** True when this entry represents a transaction that still owns chat state. */
 function isUnrecovered(entry) {
@@ -213,11 +199,7 @@ function isUnrecovered(entry) {
 
 /**
  * Write the journal, verifying it can be read back.
- *
- * There is a single journal slot for the whole application, so starting a
- * transaction would otherwise destroy an unrecovered record belonging to a
- * different chat and make that chat unrecoverable. Refuse instead — the caller
- * aborts before touching any message.
+ * @see docs/RATIONALE.md#JRN-02 why a foreign unrecovered journal is refused
  */
 export function writeJournalStrict(entry) {
     const existing = readJournal();

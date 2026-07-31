@@ -36,7 +36,7 @@ export function refreshButtonVisibility() {
     if (eligible.ok) {
         const node = document.querySelector(`#chat .mes[mesid="${eligible.targetIndex}"]`);
         node?.classList.add('intercede-eligible');
-        // Interceding a revised continuation extends the chain that produced it.
+        // @see docs/RATIONALE.md#UI-09
         const button = node?.querySelector('.mes_intercede');
         if (button) {
             button.title = eligible.chain?.depth
@@ -44,10 +44,7 @@ export function refreshButtonVisibility() {
                 : 'Intercede — respond inside this message (Alt+I)';
         }
     }
-    // Undo and Compare both need the vault snapshot, not just the metadata
-    // record that names it (INV-10). That check is asynchronous, so the result
-    // is cached per transaction and the buttons appear once it confirms —
-    // better a brief delay than a control that fails when clicked.
+    // @see docs/RATIONALE.md#UI-08, #TX-15
     const record = getCommittedTipRecord(ctx);
     if (record && Array.isArray(ctx?.chat)) {
         if (undoAvailability.transactionId === record.transactionId) {
@@ -83,8 +80,7 @@ async function verifyUndoAvailability(transactionId) {
 export const refreshButtonVisibilityDebounced = debounce(refreshButtonVisibility, 250);
 
 async function onUndoClick() {
-    // In a chain the message that gets restored is the previous intercession's
-    // continuation, not the character's untouched original — say which.
+    // @see docs/RATIONALE.md#UI-09
     const chained = Boolean(getCommittedTipRecord()?.chainDepth);
     const confirmed = await showConfirm(
         'Undo intercession?',

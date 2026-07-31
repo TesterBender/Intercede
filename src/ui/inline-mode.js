@@ -2,22 +2,9 @@
  * In-place selection interface: intercession mode rendered directly over the
  * assistant message where it sits in the chat.
  *
- * The message keeps its native Markdown rendering and spacing. Insertion
- * points appear as faded, zero-layout-impact markers — hairlines floating in
- * the existing paragraph gaps, small translucent chips at sentence breaks —
- * that light up on hover. Esc, clicking away, or invoking Intercede again
- * restores the original rendering untouched.
- *
- * Implementation is the §9.5 source-offset sentinel technique: private-use
- * Unicode sentinels are inserted at raw-text boundary offsets, the copy is
- * rendered through SillyTavern's own messageFormatting pipeline, and the
- * surviving sentinels are swapped for interactive markers. The chat data is
- * never touched; exit re-renders natively via updateMessageBlock.
- *
- * Boundaries whose text is display-hidden (e.g. a regex script that strips
- * the model's <response_consideration> planning block at render time) are
- * classified and dropped, not counted as failures — the floating-window
- * fallback fires only when sentinels die inside text the reader can see.
+ * @see docs/RATIONALE.md#UI-01 the marker design and the fallback rule
+ * @see docs/RATIONALE.md#UI-02 sentinels that formed their own block
+ * @see docs/RATIONALE.md#VIS-01 how boundaries are classified first
  */
 
 import { BOUNDARY_TYPES, REWRITE_MODES, REWRITE_MODE_LABELS } from '../constants.js';
@@ -66,7 +53,7 @@ export function openInlineMode(index = undefined) {
 
     const container = renderInstrumented(raw, boundaries, eligible.message, targetIndex);
     if (!container) return 'fallback';
-    // Which boundaries live in text the reader can actually see? (§9.5)
+    // @see docs/RATIONALE.md#VIS-01
     const statuses = classifyBoundaries(raw, boundaries, container);
 
     closeInlineMode();
@@ -93,8 +80,7 @@ export function openInlineMode(index = undefined) {
     const survivors = inlineState.markers.size;
     const failedCount = statuses.filter(status => status === 'failed').length;
     if (failedCount > survivors) {
-        // Sentinels died inside VISIBLE text — the pipeline mangles them and
-        // marker positions cannot be trusted for this message.
+        // @see docs/RATIONALE.md#UI-01 ('failed' triggers the window fallback)
         inlineState = null;
         return 'fallback';
     }
@@ -104,7 +90,7 @@ export function openInlineMode(index = undefined) {
         return 'ok';
     }
 
-    // Swap the rendered content in (moving nodes keeps marker listeners alive).
+    // Moving nodes keeps marker listeners alive. @see docs/RATIONALE.md#UI-01
     mesTextNode.replaceChildren(...container.childNodes);
     mesNode.classList.add('intercede-inline-active');
 
@@ -125,7 +111,7 @@ export function openInlineMode(index = undefined) {
     inlineState.onDocMousedown = (event) => {
         if (!inlineState || !(event.target instanceof Element)) return;
         if (document.querySelector('.intercede-modal-backdrop')) return;
-        // Trigger controls toggle the mode themselves — don't double-handle.
+        // @see docs/RATIONALE.md#UI-10
         if (event.target.closest('#intercede_wand_item, .mes_intercede')) return;
         if (!inlineState.mesNode.contains(event.target)) {
             closeInlineMode();
@@ -223,8 +209,7 @@ function placeMarkers(container, boundaries) {
 
             const host = isParagraph ? hostBlockOf(node, container) : null;
             if (host) {
-                // Paragraph markers become a hairline floating in the existing
-                // gap below the host block — absolute, so spacing never shifts.
+                // Absolute, so spacing never shifts. @see docs/RATIONALE.md#UI-01
                 host.classList.add('intercede-ipara-host');
                 host.appendChild(marker);
                 marker.dataset.hosted = '1';
@@ -238,15 +223,12 @@ function placeMarkers(container, boundaries) {
 }
 
 /**
- * A sentinel that formed its own block — typically at the edge of a
- * display-hidden region — leaves an empty paragraph behind once swapped for a
- * marker. Native rendering has no such block, so keeping it would shift the
- * layout: drop the marker and its host block, and reclassify the boundary as
- * hidden so it doesn't count toward the fallback decision.
+ * Drop markers whose sentinel formed its own block.
+ * @see docs/RATIONALE.md#UI-02
  */
 function removeGhostMarkers(container, statuses) {
     for (const [index, marker] of [...inlineState.markers]) {
-        // The container is still detached here — membership, not isConnected.
+        // Still detached here — membership, not isConnected. @see docs/RATIONALE.md#UI-02
         if (!container.contains(marker)) {
             inlineState.markers.delete(index);
             statuses[index] = 'hidden';
@@ -308,8 +290,7 @@ function selectInlineBoundary(index, draft = null) {
     for (const [, node] of state.markers) node.classList.remove('intercede-imarker-selected');
     marker.classList.add('intercede-imarker-selected');
 
-    // Paragraph markers are appended to their host block, so dimming starts at
-    // the host; sentence markers dim from their own position.
+    // @see docs/RATIONALE.md#UI-11
     const startNode = marker.dataset.hosted ? marker.parentElement : marker;
     state.undoDim = dimAfter(startNode, state.mesTextNode);
 

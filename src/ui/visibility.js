@@ -1,24 +1,8 @@
 /**
  * Boundary visibility against the rendered message (§9.5).
  *
- * Display-only transforms — regex scripts set to "Alter Chat Display", macro
- * expansion, prompt-bias hiding — can delete whole regions of the raw text at
- * render time. Example: a script that strips <response_consideration>…
- * </response_consideration> planning blocks the model was told to emit. Such
- * text exists in message.mes but the reader never sees it, and a cut inside
- * it would be meaningless (and would split the hidden block across messages,
- * breaking the very script that hides it).
- *
- * One offscreen instrumented render classifies every boundary:
- *
- *   'visible' — its sentinel survived rendering; a marker can attach to it
- *               and a cut there is safe.
- *   'hidden'  — sentinel AND surrounding raw context are both absent from
- *               the rendered text: the region is invisible by design.
- *               Excluded from every interface.
- *   'failed'  — the surrounding context IS visible but the sentinel was
- *               destroyed: the pipeline mangles private-use characters, so
- *               in-place marker positions cannot be trusted for this message.
+ * @see docs/RATIONALE.md#VIS-01 the visible / hidden / failed classification
+ * @see docs/RATIONALE.md#VIS-02 the private-use sentinel technique
  */
 
 import { getCtx } from '../stcontext.js';
@@ -82,9 +66,7 @@ export function classifyBoundaries(raw, boundaries, container) {
     const renderedNorm = normalize(renderedText);
     return boundaries.map((boundary, index) => {
         if (renderedText.includes(S_START + index + S_END)) return 'visible';
-        // Truncate context windows at the neighboring boundaries: a partially
-        // surviving sentinel there (e.g. only its digits) must not pollute the
-        // text being matched.
+        // @see docs/RATIONALE.md#VIS-03
         const afterEnd = Math.min(boundary.offset + CONTEXT_CHARS, boundaries[index + 1]?.offset ?? raw.length);
         const beforeStart = Math.max(boundary.offset - CONTEXT_CHARS, boundaries[index - 1]?.offset ?? 0);
         const after = normalize(raw.slice(boundary.offset, afterEnd));

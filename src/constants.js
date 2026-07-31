@@ -59,9 +59,8 @@ export const JOURNAL_STAGE = Object.freeze({
 });
 
 /**
- * Stages after which the transaction owns nothing further, so a new journal may
- * replace the record. Every other stage means an interrupted transaction whose
- * evidence must survive.
+ * Stages after which the transaction owns nothing further.
+ * @see docs/RATIONALE.md#JRN-03
  */
 export const TERMINAL_JOURNAL_STAGES = Object.freeze([
     JOURNAL_STAGE.COMMITTED,
@@ -91,11 +90,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     defaultMode: REWRITE_MODES.ADAPTIVE,
     confirmBeforeCommit: true,
     compareAfterCommit: false,
-    /**
-     * 0 = keep snapshots indefinitely (the default: an undo snapshot must never
-     * disappear on its own). Age cleanup, when enabled, still refuses to delete
-     * a committed snapshot that has not been explicitly finalized.
-     */
+    /** 0 = keep snapshots indefinitely. @see docs/RATIONALE.md#CFG-01 */
     snapshotTtlDays: 0,
     showButton: true,
     warnExtensions: true,

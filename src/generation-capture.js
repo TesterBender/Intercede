@@ -1,22 +1,9 @@
 /**
  * Capture of the assistant message this transaction generated (§5.3, INV-03).
  *
- * Taking `chat[chat.length - 1]` after generation is unsafe: another extension
- * can append between the reply landing and generation ending, and the tail is
- * then somebody else's message. Instead we watch the assistant-message event.
- *
- * The critical distinction is between an *observed candidate* and an *owned
- * message*. The event handler only records what it saw; it writes nothing. A
- * candidate becomes owned only once `proveGeneratedSuffix` has checked it
- * against the transaction's expected shape. Marking inside the handler would
- * make the marker self-justifying — Intercede would tag the first assistant
- * message to arrive, then later treat its own tag as evidence of ownership,
- * which is exactly the inference INV-03 exists to forbid.
- *
- * The event name and payload shape are the one place this file is coupled to a
- * SillyTavern version. If 1.18.x differs from the normalization below, fix it
- * here and record the observed payload in tests — never by relaxing the
- * ownership proof downstream.
+ * @see docs/RATIONALE.md#CAP-01 observed candidate is not an owned message
+ * @see docs/RATIONALE.md#CAP-02 the one place coupled to a SillyTavern version
+ * @see docs/RATIONALE.md#CAP-05 the proof here is structural only, by design
  */
 
 import { RecoveryRequiredError } from './errors.js';
@@ -24,8 +11,8 @@ import { getCurrentChatId, getEventSource, getEventTypes } from './stcontext.js'
 import { markOwnedMessage, OWNED_ROLE } from './ownership.js';
 
 /**
- * SillyTavern has passed the message id as a bare integer historically; some
- * builds pass an object. Accept both, and fall back to identity lookup.
+ * Resolve the message index from the host's event payload.
+ * @see docs/RATIONALE.md#CAP-03 accepted payload shapes
  */
 export function normalizeMessageIndex(payload, ctx) {
     if (Number.isInteger(payload)) return payload;
@@ -49,7 +36,7 @@ export function getCaptureEventName(ctx) {
  *
  * @returns {{ finish: () => Array, dispose: () => void, eventName: string }}
  *   `finish()` yields every candidate observed, in arrival order. It never
- *   decides which one is ours.
+ *   decides which one is ours — @see docs/RATIONALE.md#CAP-01
  */
 export function beginAssistantCapture(ctx, { chatId, expectedGenerationKind = 'normal' }) {
     const eventName = getCaptureEventName(ctx);
@@ -64,8 +51,7 @@ export function beginAssistantCapture(ctx, { chatId, expectedGenerationKind = 'n
         if (closed) return;
         if (getCurrentChatId(ctx) !== chatId) return;
 
-        // Builds that pass no type are treated as ordinary generation rather
-        // than filtered out, so capture does not silently observe nothing.
+        // @see docs/RATIONALE.md#CAP-04
         const kind = (generationType === undefined || generationType === null || generationType === '')
             ? 'normal'
             : String(generationType);
@@ -75,7 +61,6 @@ export function beginAssistantCapture(ctx, { chatId, expectedGenerationKind = 'n
         const message = ctx.chat[index];
         if (!message || message.is_user || message.is_system) return;
 
-        // The same message announced twice is one candidate, not two.
         if (candidates.some(candidate => candidate.message === message)) return;
 
         candidates.push({ index, message, kind });
@@ -102,12 +87,7 @@ export function beginAssistantCapture(ctx, { chatId, expectedGenerationKind = 'n
 /**
  * Promote an observed candidate to an owned message, or refuse.
  *
- * This is deliberately structural only. It answers "is this message the one
- * this transaction created?" — not "was it generated with the right
- * instruction", which the lease receipt answers separately. Keeping them apart
- * matters for rollback: a continuation produced without the rewrite prompt is
- * still *ours* to remove, whereas an ambiguous tail is nobody's to touch.
- *
+ * @see docs/RATIONALE.md#CAP-05 why this stays separate from the lease receipt
  * @throws {RecoveryRequiredError} when ownership cannot be established.
  * @returns {{ index: number, message: object }}
  */

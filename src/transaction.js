@@ -3,9 +3,10 @@
  *
  *   Original assistant message  →  Assistant prefix / User insertion / Assistant revised suffix
  *
- * Every step is journaled; any failure restores the complete original message,
- * swipes, and metadata from the snapshot. Rollback is idempotent and refuses to
- * touch messages it cannot prove belong to the transaction.
+ * @see docs/RATIONALE.md#TX-01 the transaction contract
+ * @see docs/RATIONALE.md#TX-05 attribution before ownership is claimed
+ * @see docs/RATIONALE.md#TX-08 selective rollback
+ * @see docs/RATIONALE.md#TX-11 the recovery-required latch
  */
 
 import { resolveAnchor } from './anchors.js';
@@ -73,11 +74,7 @@ import {
 /** @type {IntercedeTransaction | null} */
 let activeTransaction = null;
 
-/**
- * Set when a transaction could not prove ownership of its own messages. New
- * intercessions are blocked until the user resolves it, because starting
- * another one on top of an ambiguous chat compounds the problem (§5.7).
- */
+/** Blocks new intercessions once ownership was unprovable. @see docs/RATIONALE.md#TX-11 */
 let recoveryRequired = false;
 
 export function isRecoveryRequired() {
@@ -121,11 +118,7 @@ function readTransactions(ctx) {
 /**
  * Capture chatMetadata.intercede exactly as it is before the transaction
  * touches it (§6.2, INV-06).
- *
- * This deliberately does not go through getMetaContainer(), which materializes
- * the container as a side effect of reading. Whether the property existed at
- * all is part of the state being preserved: a chat that had no Intercede
- * metadata must still have none after a rollback.
+ * @see docs/RATIONALE.md#TX-12 — must not materialize the container
  */
 function snapshotIntercedeMetadata(ctx) {
     const metadata = getChatMetadata(ctx);
@@ -149,13 +142,7 @@ function restoreIntercedeMetadata(ctx, snapshot) {
 
 /**
  * §12.9 — where a prospective target sits in an intercession chain.
- *
- * Interceding the revised continuation of an earlier intercession is a normal
- * operation: the continuation is an ordinary assistant message that happens to
- * carry a `suffix` marker, and cutting it starts a new transaction whose prefix
- * is that continuation. `depth` counts how many intercessions deep the new one
- * would be (0 = interceding a message no intercession produced).
- *
+ * @see docs/RATIONALE.md#TX-04
  * @returns {{ parentTransactionId: string | null, depth: number }}
  */
 export function getChainPosition(ctx = getCtx(), index = undefined) {
@@ -170,9 +157,8 @@ export function getChainPosition(ctx = getCtx(), index = undefined) {
 }
 
 /**
- * The committed records a transaction is built on, oldest first — the chain
- * that produced the message it cut. Walks the `parentTransactionId` links and
- * stops on a missing or repeated link rather than looping.
+ * The committed records a transaction is built on, oldest first.
+ * @see docs/RATIONALE.md#TX-04
  */
 export function getChainAncestry(ctx = getCtx(), transactionId) {
     const transactions = readTransactions(ctx);
@@ -188,9 +174,8 @@ export function getChainAncestry(ctx = getCtx(), transactionId) {
 }
 
 /**
- * Version-one eligibility: the latest, completed, non-system assistant message
- * in a non-group chat, while nothing is generating. A revised continuation left
- * by an earlier intercession qualifies like any other assistant message.
+ * Version-one eligibility.
+ * @see docs/RATIONALE.md#TX-03 the full precondition list
  * @returns {{ ok: boolean, reason?: string, targetIndex?: number, message?: object, chain?: { parentTransactionId: string | null, depth: number } }}
  */
 export function isEligibleTarget(ctx = getCtx(), index = undefined) {
@@ -242,14 +227,7 @@ function messageTimestamp() {
 
 /**
  * Delete the messages a transaction created, and nothing else (§5.6, INV-05).
- *
- * Each candidate must satisfy two independent proofs: the object reference
- * captured when the transaction created it is still present in the chat, and
- * that object still carries this transaction's marker in an expected role. A
- * reference that has already gone is fine — that is what makes repeated
- * rollbacks idempotent. A reference that is present but no longer marked is
- * not fine, and stops the rollback rather than removing a message somebody else
- * may now own.
+ * @see docs/RATIONALE.md#TX-08 the two proofs, and why a missing ref is fine
  */
 async function removeOwnedMessages(ctx, ownership) {
     const candidates = [
@@ -316,12 +294,7 @@ export class IntercedeTransaction {
         this.chain = { parentTransactionId: null, depth: 0 };
         this.result = { warnings: [], preservation: null };
         this._rollingBack = false;
-        /**
-         * True once canonical chat state has actually been changed. Rollback
-         * keys off this rather than off the snapshot, so a transaction that
-         * aborted while arming its own journal never clears or restores state
-         * that belongs to somebody else.
-         */
+        /** Canonical state actually changed. @see docs/RATIONALE.md#TX-02 */
         this._mutated = false;
     }
 
@@ -389,11 +362,7 @@ export class IntercedeTransaction {
 
     /**
      * §12.4 / §19 — complete original message into the vault, journal armed.
-     *
-     * Nothing below may fail quietly. If the journal or the vault cannot be
-     * proven durable, the transaction aborts here, with the chat untouched —
-     * that is strictly better than mutating a message whose only backup might
-     * not survive a reload (INV-07).
+     * @see docs/RATIONALE.md#VAULT-01 and #JRN-01 — nothing here may fail quietly
      */
     async snapshot() {
         const ctx = getCtx();
@@ -453,11 +422,7 @@ export class IntercedeTransaction {
         if (Array.isArray(message.swipes) && Number.isInteger(message.swipe_id) && message.swipes[message.swipe_id] !== undefined) {
             message.swipes[message.swipe_id] = this.prefix;
         }
-        // A chained target already carries its own marker (it is some earlier
-        // transaction's revised continuation). markOwnedMessage keeps that
-        // provenance beside the new one so the earlier transaction stays
-        // identifiable from the message itself, not only from the snapshot that
-        // undo restores.
+        // @see docs/RATIONALE.md#TX-04, #OWN-02
         markOwnedMessage(message, this.transactionId, OWNED_ROLE.PREFIX);
         this._mutated = true;
 
@@ -523,9 +488,7 @@ export class IntercedeTransaction {
         });
         updateJournalStrict({ stage: JOURNAL_STAGE.GENERATION_STARTED });
 
-        // Identify the continuation by the event that announces it, not by its
-        // position afterwards: the tail may belong to another extension by the
-        // time generation ends (INV-03).
+        // @see docs/RATIONALE.md#CAP-01
         const capture = beginAssistantCapture(ctx, { chatId: this.chatId });
         const sequenceBeforeCall = getGenerationStartSequence();
 
@@ -536,23 +499,19 @@ export class IntercedeTransaction {
             if (generation && typeof generation.then === 'function') {
                 await withTimeout(generation, GENERATION_TIMEOUT_MS, 'Generation timed out.');
             }
-            // Settle: some backends resolve slightly before the reply is appended.
+            // @see docs/RATIONALE.md#TX-17
             await waitUntil(() => !isGenerationActive(), 8000, 100);
         } catch (error) {
             generationError = error;
         } finally {
+            // Finalized here so an owned reply is always removable. @see docs/RATIONALE.md#TX-06
             candidates = capture.finish();
             closeLeaseAudit(this.transactionId);
             disarmLease();
         }
 
         // Can the reply be attributed to *this* call at all?
-        //
-        // Structural position is not enough when more than one matching
-        // generation ran: the single message that arrived at the expected index
-        // may well be the other one's. Attribution is therefore settled before
-        // anything is marked, so an unattributable message is never claimed and
-        // never deleted.
+        // @see docs/RATIONALE.md#TX-05
         const receipt = getLeaseReceipt(this.transactionId);
         const attributable = receipt?.matchingStarts === 1
             && (receipt.appliedSequence === null || receipt.appliedSequence > sequenceBeforeCall);
@@ -562,9 +521,7 @@ export class IntercedeTransaction {
         let proofError = null;
 
         if (attributable) {
-            // Claim whenever ownership is provable — including when generation
-            // failed afterwards. A message this transaction created must be
-            // removable by its own rollback, or it is stranded in the chat.
+            // @see docs/RATIONALE.md#TX-06 claim even when generation failed after
             try {
                 const proven = proveGeneratedSuffix({ candidates, chat: ctx.chat, ownership: this.ownership });
                 this.ownership.suffixIndex = proven.index;
@@ -587,13 +544,8 @@ export class IntercedeTransaction {
         }
         if (proofError) throw proofError;
 
-        // The instruction was installed for this generation and then removed
-        // again before SillyTavern assembled the prompt, because a generation
-        // Intercede did not start began in between. `applied` is true and says
-        // nothing about it. The reply is ours and provably so — hence a plain
-        // error and a clean selective rollback rather than recovery-required.
+        // @see docs/RATIONALE.md#LEASE-05 — `applied` says nothing about this
         if (receipt.promptIntegrityLost) {
-            // An already-running generation leaves no interfering start to name.
             const kinds = [...new Set(receipt.interferingStarts.map(start => start.kind))];
             const detail = kinds.length ? ` (${kinds.join(', ')})` : ' that was already running';
             throw new Error(
@@ -601,10 +553,7 @@ export class IntercedeTransaction {
             );
         }
 
-        // Exactly one matching generation ran and it is ours, but the rewrite
-        // instruction never reached it — the reply is an ordinary continuation
-        // that would otherwise commit silently. Ownership *is* proven here, so
-        // a clean selective rollback is the right outcome.
+        // Ours, but uninstructed. @see docs/RATIONALE.md#LEASE-03, #LEASE-05
         if (!receipt.applied) {
             throw new Error(
                 'The rewrite instruction was never applied to this generation, so the continuation was written without it. Nothing was committed.',
@@ -640,7 +589,7 @@ export class IntercedeTransaction {
             if (!keep) return { ok: false, fatal: ['Generation was cancelled.'], warnings: [] };
         }
 
-        // Measure the message we proved we generated, never the chat tail.
+        // @see docs/RATIONALE.md#TX-16
         const quality = qualityWarnings({
             prefix: this.prefix,
             insertion: this.insertion,
@@ -678,9 +627,7 @@ export class IntercedeTransaction {
             operation: 'commit',
         };
 
-        // Listeners of this event can mutate history, so nothing may be trusted
-        // across it. Emit first, then prove ownership again before writing any
-        // record that says the commit happened (§5.5).
+        // @see docs/RATIONALE.md#TX-07 — listeners may mutate history
         await emitIntercedeEvent(INTERCEDE_EVENTS.BEFORE_COMMIT, eventPayload);
 
         const recheck = validateOwnedStructure({
@@ -746,11 +693,7 @@ export class IntercedeTransaction {
 
     /**
      * §12.8 — idempotent, exact restoration.
-     *
-     * Only messages this transaction can prove it created are removed. Anything
-     * unprovable stops the rollback and escalates to recovery-required with the
-     * journal and vault intact, because guessing here is how unrelated messages
-     * get destroyed (INV-05).
+     * @see docs/RATIONALE.md#TX-08 and #TX-09
      */
     async rollback(reason) {
         if (this._rollingBack
@@ -769,9 +712,7 @@ export class IntercedeTransaction {
 
         try {
             if (!this._mutated) {
-                // Nothing canonical was changed. Clear the journal only if it is
-                // still ours — a failure while arming may mean it belongs to an
-                // earlier, unrecovered transaction.
+                // @see docs/RATIONALE.md#TX-02, #JRN-02
                 if (readJournal()?.transactionId === this.transactionId) clearJournal();
                 if (this.vaultKey) await vaultDelete(this.vaultKey);
                 this.state = TX_STATE.ROLLED_BACK;
@@ -779,9 +720,7 @@ export class IntercedeTransaction {
             }
 
             if (!ctx || getCurrentChatId(ctx) !== this.chatId) {
-                // The user switched chats mid-transaction. Never touch the active
-                // chat; the journal stays behind so recovery runs when the
-                // original chat is reopened.
+                // @see docs/RATIONALE.md#TX-10
                 notify('warning', 'The chat changed during an intercession. Reopen that chat to restore the original message.', { timeOut: 10000 });
                 return;
             }
@@ -813,8 +752,7 @@ export class IntercedeTransaction {
             try {
                 await persistChatAndMetadata(ctx);
             } catch (error) {
-                // Correct in memory but not on disk. The journal and vault must
-                // survive so the next load can finish the job (INV-12).
+                // @see docs/RATIONALE.md#TX-09
                 console.error('[Intercede] save after rollback failed', error);
                 await this.enterRecoveryRequired(new RecoveryRequiredError(
                     'The original message was restored in memory but the chat could not be saved. Do not close this chat.',
@@ -840,8 +778,8 @@ export class IntercedeTransaction {
     }
 
     /**
-     * Ownership is ambiguous. Stop, keep every message, keep the evidence, and
-     * hand the decision to the user (§5.7).
+     * Ownership is ambiguous — stop and hand the decision to the user (§5.7).
+     * @see docs/RATIONALE.md#TX-11
      */
     async enterRecoveryRequired(error) {
         this.state = TX_STATE.RECOVERY_REQUIRED;
@@ -882,11 +820,7 @@ export function getCommittedTipRecord(ctx = getCtx()) {
 
 /**
  * Whether Undo and Compare can actually deliver (INV-10).
- *
- * The metadata record alone is not enough: it names a vault key, and the
- * snapshot behind that key is what makes an exact undo possible. Offering the
- * controls without checking means the user learns the snapshot is gone only
- * after clicking.
+ * @see docs/RATIONALE.md#TX-15
  */
 export async function canUndoTip(ctx = getCtx()) {
     const record = getCommittedTipRecord(ctx);
@@ -895,9 +829,8 @@ export async function canUndoTip(ctx = getCtx()) {
 }
 
 /**
- * Give up undo for the committed intercession at the tail, deliberately and
- * irreversibly. The canonical messages are left exactly as they are; only the
- * ability to restore the pre-intercession original is discarded.
+ * Give up undo for the committed intercession at the tail, irreversibly.
+ * @see docs/RATIONALE.md#TX-14
  */
 export async function finalizeIntercession() {
     const ctx = getCtx();
@@ -930,11 +863,7 @@ export async function finalizeIntercession() {
 
 /**
  * §14.1/§14.2 — undo the committed intercession while it is still the chat tail.
- *
- * Chains unwind newest-first: restoring the snapshot puts back the message the
- * cut was made in, marker and all, so if that message was an earlier
- * intercession's revised continuation the tail becomes that intercession again
- * and undo can be run once more.
+ * @see docs/RATIONALE.md#TX-13 how chains unwind
  * @returns {Promise<{ ok: boolean, reason?: string }>}
  */
 export async function undoIntercession() {
@@ -953,8 +882,7 @@ export async function undoIntercession() {
         return { ok: false, reason: 'The original snapshot is no longer in the vault, so an exact undo is not possible.' };
     }
 
-    // getCommittedTipRecord already proved all three tail messages carry this
-    // transaction's markers, so the two above the prefix are provably ours.
+    // @see docs/RATIONALE.md#TX-13 — the tip record already proved all three
     const chat = ctx.chat;
     const prefixIndex = chat.length - 3;
     await deleteMessageAt(ctx, prefixIndex + 2);
@@ -971,8 +899,7 @@ export async function undoIntercession() {
     try {
         await persistChatAndMetadata(ctx);
     } catch (error) {
-        // The snapshot stays in the vault: the chat on disk still describes the
-        // intercession, so undo must remain possible after a reload.
+        // @see docs/RATIONALE.md#TX-13 — the snapshot deliberately stays
         console.error('[Intercede] save after undo failed', error);
         notify('error', 'The original message was restored in memory but the chat could not be saved. Do not close this chat.', { timeOut: 0 });
         return { ok: false, reason: 'The undo could not be saved.' };
@@ -1010,13 +937,7 @@ export async function checkRecovery() {
 
 /**
  * How much the journal stage lets us assume, per §7.5.
- *
- * The distinction that matters: before the prefix was applied, nothing canonical
- * had changed, so a leftover journal is just litter. From `prefix-applied`
- * onward the chat was modified and the snapshot is the only way back. At
- * `committing` the commit may or may not have reached disk, and at
- * `recovery-required` a previous run already determined that ownership is
- * ambiguous — which means no automatic destructive action is permitted.
+ * @see docs/RATIONALE.md#REC-01 the stage table
  */
 const STAGES_BEFORE_MUTATION = [
     JOURNAL_STAGE.ABOUT_TO_MUTATE,
@@ -1036,6 +957,7 @@ async function checkRecoveryInner() {
     const ctx = getCtx();
     const chatId = getCurrentChatId(ctx);
     if (journal.chatId !== chatId) {
+        // @see docs/RATIONALE.md#REC-05
         notify('warning', `An unfinished intercession exists in another chat ("${journal.chatId}"). Open that chat to recover it.`, { timeOut: 10000 });
         return;
     }
@@ -1045,9 +967,7 @@ async function checkRecoveryInner() {
         const why = journal.error ? `: ${journal.error}` : '.';
         const snapshot = await vaultGet(journal.vaultKey);
 
-        // Offer the snapshot when there still is one — a rollback that was
-        // correct in memory but failed to save lands here, and the original is
-        // still recoverable.
+        // @see docs/RATIONALE.md#TX-09 — a save-failed rollback lands here
         if (snapshot?.completeOriginalMessage) {
             const restore = await showConfirm(
                 'An intercession needs your review',
@@ -1064,8 +984,7 @@ async function checkRecoveryInner() {
             return;
         }
 
-        // No snapshot: nothing can be restored, and clearing the journal here
-        // would erase the only record that a canonical mutation was interrupted.
+        // @see docs/RATIONALE.md#REC-02
         notify(
             'error',
             `Intercede stopped without deleting anything${why} Its snapshot is missing, so the interruption is being kept on record. Please review the last few messages yourself.`,
@@ -1074,7 +993,7 @@ async function checkRecoveryInner() {
         return;
     }
 
-    // Nothing canonical was mutated at these stages; the target is untouched.
+    // @see docs/RATIONALE.md#REC-01
     if (STAGES_BEFORE_MUTATION.includes(journal.stage)) {
         const target = ctx?.chat?.[journal.targetIndex];
         if (target && hashText(String(target.mes ?? '')) === journal.expectedTargetHash) {
@@ -1086,10 +1005,7 @@ async function checkRecoveryInner() {
 
     const vaultRecord = await vaultGet(journal.vaultKey);
     if (!vaultRecord?.completeOriginalMessage) {
-        // The journal is the only durable evidence that canonical history was
-        // mid-change. Losing the snapshot makes automatic restoration
-        // impossible, not the interruption imaginary — so keep the record and
-        // stop, rather than declaring the transaction resolved (P0-04).
+        // @see docs/RATIONALE.md#REC-02
         recoveryRequired = true;
         try {
             updateJournal({ stage: JOURNAL_STAGE.RECOVERY_REQUIRED, error: 'snapshot-missing' });
@@ -1121,20 +1037,8 @@ async function checkRecoveryInner() {
 }
 
 /**
- * Resolve an interrupted transaction by accepting the chat as it currently
- * stands (P0-03).
- *
- * "Keep chat as it is" cannot mean "delete the journal and walk away": that
- * leaves messages still marked as belonging to a transaction that never
- * finished, and a vault snapshot nothing references. Worse, when the target is
- * half-applied the snapshot holds the *only* copy of the original text, so
- * discarding it destroys the very thing recovery exists to protect.
- *
- * So the markers are cleared, an `abandoned` record keeps the snapshot
- * referenced and findable, and the snapshot itself is retained. If any marker
- * cannot be accounted for, nothing is touched and the transaction stays in
- * recovery-required.
- *
+ * Resolve an interrupted transaction by accepting the chat as it stands (P0-03).
+ * @see docs/RATIONALE.md#REC-03 why the snapshot and markers are handled this way
  * @returns {Promise<boolean>} false when the state could not be resolved safely
  */
 async function abandonInterruptedTransaction(ctx, journal, vaultRecord) {
@@ -1171,8 +1075,7 @@ async function abandonInterruptedTransaction(ctx, journal, vaultRecord) {
         return false;
     }
 
-    // Deliberately keeps the snapshot: it is still the only copy of the
-    // pre-intercession text, and cleanupVault protects abandoned records.
+    // @see docs/RATIONALE.md#REC-03, #VAULT-02 — the snapshot is kept on purpose
     if (vaultRecord && journal.vaultKey) {
         try {
             await vaultPut(journal.vaultKey, { ...vaultRecord, state: 'abandoned', abandonedAt: Date.now() });
@@ -1202,14 +1105,7 @@ async function restoreFromVaultRecord(ctx, journal, vaultRecord) {
         return;
     }
 
-    // Only remove messages that can be proven to belong to the interrupted
-    // transaction; stop the moment anything else is found.
-    //
-    // Proof is either the transaction's own marker, or — for the inserted user
-    // message, which may have been added before the marker was written — an
-    // exact text match against the snapshot. Position alone is never proof: an
-    // unmarked assistant message sitting where the continuation would have gone
-    // may equally be another extension's, so recovery stops and asks.
+    // @see docs/RATIONALE.md#REC-04 what counts as proof here
     while (chat.length > targetIndex + 1) {
         const index = chat.length - 1;
         const message = chat[index];
@@ -1233,7 +1129,7 @@ async function restoreFromVaultRecord(ctx, journal, vaultRecord) {
     try {
         await persistChatAndMetadata(ctx);
     } catch (error) {
-        // Leave the journal and snapshot in place so the next load can retry.
+        // @see docs/RATIONALE.md#REC-02 — journal and snapshot stay for a retry
         console.error('[Intercede] save after recovery failed', error);
         notify('error', 'The original message was restored in memory but the chat could not be saved. Do not close this chat.', { timeOut: 0 });
         return;

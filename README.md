@@ -172,9 +172,23 @@ still "succeed". The event name and payload used to capture the generated contin
 the only version-coupled assumption; they live in `src/generation-capture.js` and are
 recorded in the tests.
 
+## Why the code does what it does
+
+The reasoning behind every non-obvious decision lives in **[docs/RATIONALE.md](docs/RATIONALE.md)**,
+not in the source. Rules there have stable IDs, and the code points at them:
+
+```js
+// @see docs/RATIONALE.md#LEASE-05
+```
+
+That pointer means the line is load-bearing for a stated safety property. Read the rule
+before changing it; update the rule if you change the behaviour. Start with the invariant
+table at the top of the document, or with `TX-01` for the transaction contract.
+
 ## Module map
 
 ```
+docs/RATIONALE.md            design rationale, invariants, known deferred defects
 index.js                     bootstrap, slash commands, recovery wiring, public API
 src/constants.js             shared constants, defaults, event names
 src/stcontext.js             SillyTavern.getContext() access + capability check

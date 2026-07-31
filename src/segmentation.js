@@ -1,11 +1,9 @@
 /**
  * Boundary discovery over RAW message text (message.mes).
  *
- * The rendered DOM is never consulted: Markdown, regex scripts, and macros can all
- * reshape the visible message, so every boundary is an offset into the raw source.
- * Boundaries are only offered between "safe" textual units — never inside fenced or
- * inline code, Markdown links/images, raw HTML tags, macro expressions, or an
- * unfinished quotation.
+ * @see docs/RATIONALE.md#SEG-01 raw source only, never the DOM
+ * @see docs/RATIONALE.md#SEG-02 what counts as a protected range
+ * @see docs/RATIONALE.md#SEG-03 KNOWN DEFECT in SEPARATOR_REGEX (deferred)
  */
 
 import { BOUNDARY_TYPES } from './constants.js';
@@ -70,7 +68,11 @@ export function isOffsetProtected(offset, ranges) {
     return ranges.some(range => offset > range.start && offset < range.end);
 }
 
-/** Separator runs: one or more newlines with optional horizontal whitespace between them. */
+/**
+ * Separator runs: one or more newlines with optional horizontal whitespace.
+ * @see docs/RATIONALE.md#SEG-03 — KNOWN DEFECT: a single newline reads as a
+ * paragraph break, degrading getBlocks() into a line-splitter. Deferred.
+ */
 const SEPARATOR_REGEX = /\n[^\S\n]*(?:\n[^\S\n]*)*/g;
 
 /**
@@ -88,7 +90,7 @@ function getBlocks(text) {
     return blocks;
 }
 
-/** Abbreviations (and single initials) that must not terminate a sentence. */
+/** Abbreviations that must not end a sentence. @see docs/RATIONALE.md#SEG-04 */
 const ABBREVIATION_REGEX = /(?:\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|Lt|Sgt|Capt|Col|Gen|Rev|Hon|vs|etc|approx|dept|est|Fig|No|Vol|Ch|pp?)\.|\be\.g\.|\bi\.e\.|\b[A-Z]\.)$/;
 
 /** Characters a sentence must not begin with (continuation punctuation, closing quotes). */
@@ -173,7 +175,7 @@ export function getBoundaries(text, granularity = 'sentence') {
 
     boundaries.sort((a, b) => a.offset - b.offset);
 
-    // Deduplicate boundaries that resolve to (nearly) the same cut, preferring paragraphs.
+    // @see docs/RATIONALE.md#SEG-05
     /** @type {Boundary[]} */
     const deduped = [];
     for (const boundary of boundaries) {
@@ -186,7 +188,6 @@ export function getBoundaries(text, granularity = 'sentence') {
         }
         deduped.push(boundary);
     }
-    // Sentence cuts immediately before a paragraph separator duplicate the paragraph cut.
     return deduped.filter((boundary, index) => {
         const next = deduped[index + 1];
         if (boundary.type === BOUNDARY_TYPES.SENTENCE && next && next.type === BOUNDARY_TYPES.PARAGRAPH) {
@@ -198,8 +199,7 @@ export function getBoundaries(text, granularity = 'sentence') {
 
 /**
  * Split raw text at a boundary offset.
- * The prefix keeps its exact source text minus trailing separator whitespace; the
- * suffix drops its leading separator whitespace (each becomes its own message).
+ * @see docs/RATIONALE.md#SEG-06 what happens to the separator whitespace
  */
 export function splitAtOffset(text, offset) {
     return {

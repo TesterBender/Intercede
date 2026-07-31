@@ -1,8 +1,6 @@
 /**
- * Floating-window selection interface (§8): a reading overlay over the raw
- * message with clickable insertion boundaries and an inline composer. The
- * overlay never mutates the underlying chat message — all mutation happens
- * inside the transaction after an explicit commit.
+ * Floating-window selection interface (§8).
+ * @see docs/RATIONALE.md#UI-03 the overlay never mutates the chat message
  */
 
 import { BOUNDARY_TYPES, REWRITE_MODES, REWRITE_MODE_LABELS } from '../constants.js';
@@ -55,9 +53,7 @@ export function openOverlayMode(index = undefined) {
         notify('warning', 'No safe insertion points were found in this message.');
         return;
     }
-    // Display-only transforms (regex scripts, macros) can hide regions of the
-    // raw text; a cut inside an invisible region would split the hidden block,
-    // so those boundaries are never offered.
+    // @see docs/RATIONALE.md#VIS-01
     const container = renderInstrumented(raw, boundaries, eligible.message, eligible.targetIndex);
     if (container) {
         const statuses = classifyBoundaries(raw, boundaries, container);
@@ -104,8 +100,7 @@ function buildOverlay({ ctx, settings, raw, boundaries, targetIndex, message }) 
     for (let i = 0; i <= boundaries.length; i++) {
         const end = i < boundaries.length ? boundaries[i].offset : raw.length;
         let sliceText = raw.slice(cursor, end);
-        // Display-only tidy-up: the separating whitespace is represented by the
-        // boundary control itself, so drop it from the following slice's display.
+        // @see docs/RATIONALE.md#UI-03
         if (i > 0) sliceText = sliceText.replace(/^\s+/, '');
         const slice = el('span', 'intercede-slice', sliceText);
         if (i > 0 && boundaries[i - 1].type === BOUNDARY_TYPES.PARAGRAPH) {
@@ -126,7 +121,7 @@ function buildOverlay({ ctx, settings, raw, boundaries, targetIndex, message }) 
             button.title = isParagraph ? 'Respond here (paragraph break)' : 'Respond here (sentence break)';
             button.appendChild(el('span', 'intercede-boundary-label', isParagraph ? '⤷ respond here' : '⤷'));
             button.addEventListener('click', () => selectBoundary(i));
-            // §8.2 — hovering or focusing a boundary previews what would be rewritten.
+            // §8.2 — @see docs/RATIONALE.md#UI-03
             button.addEventListener('mouseenter', () => previewBoundary(i, true));
             button.addEventListener('mouseleave', () => previewBoundary(i, false));
             button.addEventListener('focus', () => previewBoundary(i, true));
@@ -144,7 +139,7 @@ function buildOverlay({ ctx, settings, raw, boundaries, targetIndex, message }) 
 
     const onKeydown = (event) => {
         if (!overlayState) return;
-        // A confirm/compare dialog is stacked on top — let it own the keyboard.
+        // @see docs/RATIONALE.md#UI-03 (stacked dialog owns the keyboard)
         if (document.querySelector('.intercede-modal-backdrop')) return;
         if (event.key === 'Escape') {
             event.preventDefault();

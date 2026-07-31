@@ -1,11 +1,8 @@
 /**
  * Proof of message ownership (§5.2, INV-03).
  *
- * Array position is not proof. Another extension can append, insert, or reorder
- * messages while Intercede is generating, so every message the transaction
- * intends to rewrite or delete must be identifiable by two independent means:
- * the object reference captured when the transaction created it, and a marker
- * written into `message.extra`.
+ * @see docs/RATIONALE.md#OWN-01 why position is never proof
+ * @see docs/RATIONALE.md#OWN-02 markers merge to preserve chain provenance
  */
 
 import { METADATA_KEY } from './constants.js';
@@ -31,13 +28,7 @@ export function isOwnedMessage(message, transactionId, role) {
 
 /**
  * Write an ownership marker, preserving chain provenance.
- *
- * A revised continuation can itself be interceded, so the message may already
- * carry an earlier transaction's marker. That earlier link is folded into
- * `parent` rather than discarded — undo relies on it to identify the
- * intercession the current one was cut from. Re-marking a message this
- * transaction already owns (suffix-pending to suffix) keeps whatever parent it
- * had.
+ * @see docs/RATIONALE.md#OWN-02 — merging is load-bearing; do not overwrite
  */
 export function markOwnedMessage(message, transactionId, role) {
     const previous = getIntercedeMarker(message);
@@ -70,11 +61,7 @@ export function hasKnownRole(message, transactionId) {
 
 /**
  * Remove this transaction's marker, restoring the earlier link it displaced.
- *
- * Used when an interrupted transaction is abandoned rather than restored: the
- * messages stay, but they must stop claiming to belong to a transaction that
- * never completed. A chained message goes back to advertising its parent, so
- * the intercession below it remains identifiable.
+ * @see docs/RATIONALE.md#OWN-03
  */
 export function clearOwnedMarker(message, transactionId) {
     const marker = getIntercedeMarker(message);
@@ -90,10 +77,7 @@ export function clearOwnedMarker(message, transactionId) {
 
 /**
  * The bookkeeping a transaction needs to prove what it created.
- *
- * `expectedSuffixIndex` is where the continuation should land; `suffixIndex` is
- * where it actually landed, filled in by generation capture. They are compared,
- * never assumed equal.
+ * @see docs/RATIONALE.md#OWN-04 expected vs actual position
  */
 export function createOwnership(transactionId, targetIndex, originalChatLength) {
     return {

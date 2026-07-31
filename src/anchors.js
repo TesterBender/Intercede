@@ -1,9 +1,6 @@
 /**
  * Source-anchored cuts (§17.2 of the design).
- *
- * A cut is never just an offset: it also records hashes of the whole message and
- * both halves plus a window of context on each side, so a stale selection can be
- * detected — and, when unambiguous, rebased — instead of cutting at the wrong place.
+ * @see docs/RATIONALE.md#ANC-01 what an anchor records, and why
  */
 
 import { ANCHOR_CONTEXT_CHARS } from './constants.js';
@@ -42,11 +39,7 @@ export function createAnchor(raw, offset, boundaryType) {
 
 /**
  * Resolve an anchor against the message's current raw text.
- *
- * Returns the offset unchanged when the message is byte-identical to selection
- * time. If the message changed, attempts a conservative rebase: the exact
- * context window (before + after) must appear exactly once in the new text.
- * Anything ambiguous fails — a wrong cut is worse than no cut.
+ * @see docs/RATIONALE.md#ANC-02 the conservative rebase rule
  *
  * @param {string} raw current raw message text
  * @param {SourceAnchor} anchor

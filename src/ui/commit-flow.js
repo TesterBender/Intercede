@@ -13,7 +13,7 @@ import { el, notify, truncate } from '../utils.js';
 import { showCompare } from './compare.js';
 import { showConfirm } from './modal.js';
 
-/** Drafts survive a failed or cancelled intercession so the user can retry (§18). */
+/** Drafts survive a failed or cancelled intercession (§18). @see docs/RATIONALE.md#UI-04 */
 const drafts = new Map();
 
 function draftKey(chatId, targetIndex) {
@@ -35,9 +35,8 @@ export function setDraft(chatId, targetIndex, draft) {
 }
 
 /**
- * Resolve a stored draft's boundary back to an index in the caller's boundary
- * list. Drafts store the raw-text offset — stable across the two interfaces,
- * which may filter their boundary lists differently — never a positional index.
+ * Resolve a stored draft's boundary back to an index in the caller's list.
+ * @see docs/RATIONALE.md#UI-05 why drafts store offsets, not indices
  */
 export function findDraftBoundaryIndex(draft, boundaries) {
     if (!draft || !Number.isFinite(draft.boundaryOffset)) return null;
@@ -51,7 +50,7 @@ const KNOWN_MESSAGE_KEYS = new Set([
     'force_avatar', 'original_avatar', 'title', 'variables',
 ]);
 
-/** Best-effort detection of another extension's continuation/branch metadata (§16.4). */
+/** Another extension's continuation/branch metadata (§16.4). @see docs/RATIONALE.md#UI-06 */
 export function detectForeignContinuationData(message) {
     const suspicious = [];
     for (const key of Object.keys(message ?? {})) {

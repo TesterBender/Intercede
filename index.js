@@ -140,7 +140,7 @@ async function init() {
         });
     }
     if (eventTypes.GENERATION_STARTED) {
-        // A generation moves the chat on — restore any open selection mode first.
+        // @see docs/RATIONALE.md#UI-10
         eventSource?.on(eventTypes.GENERATION_STARTED, (_type, _params, dryRun) => {
             if (!dryRun) closeAllModes();
         });

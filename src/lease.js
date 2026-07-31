@@ -1,15 +1,9 @@
 /**
  * One-generation lease (§11.5, §17.3).
  *
- * The suffix-revision instruction is only ever installed from inside a
- * GENERATION_STARTED handler whose type, chat, and timing match an explicitly
- * armed lease — and it is cleared again on every generation end, stop, chat
- * change, and in the caller's `finally`. It therefore cannot leak into
- * summaries, quiet prompts, impersonation, or any later unrelated generation.
- *
- * The same mechanism re-arms automatically (from committed transaction records)
- * when the user swipes or regenerates a committed revised suffix, so every
- * native swipe is another adaptation of the same intercession.
+ * @see docs/RATIONALE.md#LEASE-01 instruction cannot leak into another generation
+ * @see docs/RATIONALE.md#LEASE-06 swipe / regenerate re-leasing
+ * @see docs/RATIONALE.md#LEASE-07 clearing on every exit path
  */
 
 import { EXTENSION_PROMPT_KEY, LEASE_TTL_MS, METADATA_KEY } from './constants.js';
@@ -22,47 +16,14 @@ let currentLease = null;
 let generationActive = false;
 let stoppedFlag = false;
 let initialized = false;
-/**
- * Monotonic count of generation starts, used to correlate a lease application
- * with the specific `generate()` call the transaction made.
- */
+/** Monotonic generation-start counter. @see docs/RATIONALE.md#LEASE-03 */
 let generationStartSequence = 0;
-/**
- * Generations begun but not yet ended.
- *
- * An interfering *start* is not the only way the instruction gets pulled: a
- * generation already running when it is installed will clear the prompt at its
- * own GENERATION_ENDED, and GENERATION_ENDED carries nothing that identifies
- * whose end it is. Counting instead lets the apply step notice that it is not
- * alone, which is the same fact one step earlier.
- *
- * Re-baselined at arm time from `generationActive` — the signal preflight
- * already trusts — so an unpaired GENERATION_ENDED cannot make the count drift
- * across transactions and start reporting interference that is not there.
- */
+/** Generations begun but not yet ended. @see docs/RATIONALE.md#LEASE-04 */
 let openGenerations = 0;
 
 /**
- * Audit of what actually happened to one transaction's lease.
- *
- * Armed is not the same as applied, applied is not the same as applied *to our
- * generation*, and none of those is the same as *still installed when the
- * prompt was assembled*. Three distinct failures hide here:
- *
- *   - A generation Intercede did not start arrives first and consumes the
- *     lease. Intercede's own generation then runs with no rewrite instruction
- *     and produces an ordinary continuation that looks perfectly valid.
- *   - Any second matching generation while the lease is open makes it
- *     impossible to say which one carried the instruction.
- *   - A non-matching generation begins *after* the instruction was installed
- *     but before SillyTavern collects extension prompts for the generation it
- *     was installed for. Refusing to let the instruction enter that foreign
- *     request is correct, but it is also what strips it from ours.
- *
- * Counting matching starts, recording the sequence number at which the prompt
- * was installed, and recording every interfering start afterwards lets the
- * transaction reject all three instead of guessing. The audit outlives the
- * lease itself, which GENERATION_ENDED clears.
+ * What became of one transaction's lease. Outlives the lease itself.
+ * @see docs/RATIONALE.md#LEASE-02 armed vs applied vs still-installed
  */
 let leaseAudit = null;
 
@@ -155,10 +116,7 @@ export function resetStoppedFlag() {
     stoppedFlag = false;
 }
 
-/**
- * When the chat tip is the revised suffix of a committed intercession, return
- * its transaction record from chat metadata (used for swipe re-leasing).
- */
+/** Transaction record when the chat tip is a committed revised suffix, else null. */
 function getTipSuffixRecord(ctx) {
     const chat = ctx?.chat;
     if (!Array.isArray(chat) || !chat.length) return null;
@@ -172,7 +130,7 @@ function getTipSuffixRecord(ctx) {
 }
 
 async function onGenerationStarted(type, _params, dryRun) {
-    if (dryRun) return;
+    if (dryRun) return; // @see docs/RATIONALE.md#LEASE-08 (deliberate exemption)
     generationActive = true;
     stoppedFlag = false;
 
@@ -182,20 +140,12 @@ async function onGenerationStarted(type, _params, dryRun) {
     generationStartSequence += 1;
     openGenerations += 1;
 
-    // Classify every start while the audit is open, whether or not the lease is
-    // still armed — the generation that stole it has already cleared
-    // `currentLease` by the time the real one begins, which is precisely the
-    // case this is here to catch.
+    // @see docs/RATIONALE.md#LEASE-03 (matching) and #LEASE-05 (interfering)
     if (leaseAudit && !leaseAudit.closed) {
         const auditChatMatches = getCurrentChatId(ctx) === leaseAudit.chatId;
         if (auditChatMatches && leaseAudit.kinds.has(kind)) {
             leaseAudit.matchingStarts += 1;
         } else {
-            // Anything else reaches disarmLease() below and clears the prompt.
-            // Before the instruction was installed that is merely a lease
-            // theft, caught by `applied` staying false. After it, the
-            // instruction is pulled out from under a generation that has not
-            // assembled its prompt yet, and nothing else would reveal it.
             leaseAudit.interferingStarts.push({
                 sequence: generationStartSequence,
                 kind,
@@ -215,20 +165,16 @@ async function onGenerationStarted(type, _params, dryRun) {
             if (leaseAudit?.transactionId === currentLease.transactionId && !leaseAudit.closed) {
                 leaseAudit.applied = true;
                 leaseAudit.appliedSequence = generationStartSequence;
-                // Ours should be the only generation open at this moment. Another
-                // one still running will clear the prompt when it ends, before
-                // ours has assembled it.
+                // @see docs/RATIONALE.md#LEASE-04
                 if (openGenerations > 1) leaseAudit.promptIntegrityLost = true;
             }
         } else {
-            // A different generation arrived first — the lease must not touch it.
             disarmLease();
         }
         return;
     }
 
-    // Swipe / regenerate on a committed revised suffix: re-install the same
-    // editorial instruction so the new swipe is another adaptation.
+    // @see docs/RATIONALE.md#LEASE-06
     if (kind === 'swipe' || kind === 'regenerate') {
         const record = getTipSuffixRecord(ctx);
         if (!record?.vaultKey) return;
@@ -269,6 +215,5 @@ export function initLease() {
         });
     }
 
-    // Never start a session with a stale instruction installed.
-    clearPrompt();
+    clearPrompt(); // @see docs/RATIONALE.md#LEASE-07
 }

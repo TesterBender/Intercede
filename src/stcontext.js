@@ -1,10 +1,6 @@
 /**
  * Access layer for the SillyTavern client context.
- *
- * Everything goes through SillyTavern.getContext() rather than importing internal
- * client modules, per the official extension guidance. Names that have shifted
- * between releases (eventTypes/event_types, extensionPromptTypes/…) are resolved
- * here with fallbacks so the rest of the extension can stay clean.
+ * @see docs/RATIONALE.md#HOST-01 why nothing imports internal client modules
  */
 
 import { DEFAULT_SETTINGS, MODULE_NAME } from './constants.js';
@@ -62,11 +58,7 @@ export async function saveMetadata(ctx = getCtx()) {
 
 /**
  * Persist chat and metadata exactly once each.
- *
- * saveMetadata() above falls back to saveChat(), so calling both in sequence can
- * save the chat twice. Callers that have already saved the chat use this
- * instead, which makes the second call a no-op when the host has no separate
- * metadata save.
+ * @see docs/RATIONALE.md#HOST-02 the double-save this avoids
  */
 export async function persistChatAndMetadata(ctx = getCtx()) {
     if (!ctx) throw new Error('SillyTavern context unavailable.');
@@ -78,10 +70,7 @@ export async function persistChatAndMetadata(ctx = getCtx()) {
 
 /**
  * Remove a single message and keep the rendered chat consistent with the array.
- *
- * Prefers the host's own deletion (which reindexes and notifies other
- * extensions). The fallback splices and reprints, because removing a DOM node
- * by `mesid` only stays coherent when deleting strictly from the tail.
+ * @see docs/RATIONALE.md#HOST-03 why the fallback reprints instead of removing a node
  */
 export async function deleteMessageAt(ctx, index) {
     if (typeof ctx.deleteMessage === 'function') {
@@ -122,7 +111,7 @@ export function saveSettings(ctx = getCtx()) {
     ctx?.saveSettingsDebounced?.();
 }
 
-/** localforage (bundled with SillyTavern) or a localStorage-backed stand-in. */
+/** localforage, or a localStorage stand-in. @see docs/RATIONALE.md#HOST-05 */
 export function getStorageBackend() {
     const lf = globalThis.SillyTavern?.libs?.localforage ?? globalThis.localforage;
     if (lf?.createInstance) {
@@ -176,9 +165,7 @@ export function checkCapabilities() {
     for (const name of required) {
         if (ctx[name] === undefined) missing.push(name);
     }
-    // Naming the events we actually depend on, rather than checking that the
-    // map is merely non-empty: a host missing the assistant-message event
-    // cannot support ownership capture, and must not start a transaction.
+    // @see docs/RATIONALE.md#HOST-04
     const eventTypes = getEventTypes(ctx);
     if (!Object.keys(eventTypes).length) {
         missing.push('eventTypes');
