@@ -61,7 +61,10 @@ function buildOverlay({ settings, raw, sourceHash, boundaries, targetIndex, chat
         el('span', 'intercede-title-name', 'Intercede'),
         el('span', 'intercede-title-hint', 'pick the point where your character responds'),
     );
-    const closeButton = el('button', 'menu_button fa-solid fa-xmark intercede-close');
+    // Deliberately not a .menu_button: dismissing is not an action of the same
+    // weight as committing, and this sits in the same panel as that button.
+    // @see docs/RATIONALE.md#UI-13
+    const closeButton = el('button', 'fa-solid fa-xmark intercede-close');
     closeButton.type = 'button';
     closeButton.title = 'Close (Esc)';
     closeButton.setAttribute('aria-label', 'Close');

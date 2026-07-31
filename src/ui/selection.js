@@ -127,7 +127,13 @@ export function buildComposer({ state, draft, variant, onCommit, onCancel }) {
     cancelButton.type = 'button';
     cancelButton.addEventListener('click', onCancel);
 
-    controls.append(select, commitButton, cancelButton);
+    // The mode select is a setting; these two are the actions. Keeping them in
+    // their own group lets the row anchor them right, away from the select,
+    // in the same order the confirmation dialog uses.
+    // @see docs/RATIONALE.md#UI-13
+    const actions = el('div', 'intercede-composer-actions');
+    actions.append(commitButton, cancelButton);
+    controls.append(select, actions);
     composer.append(textarea, controls);
     composer.appendChild(el('div', 'intercede-composer-hint',
         'Everything above stays exactly as written. Everything dimmed below is rewritten around your response.'));

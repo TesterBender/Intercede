@@ -1,5 +1,9 @@
 /**
  * Settings drawer (§23), rendered into the Extensions panel.
+ *
+ * The markup is bound afterwards by element id, so wrapper elements may be
+ * rearranged for layout but no `id` may move.
+ * @see docs/RATIONALE.md#UI-13 why the controls are sectioned and the button framed
  */
 
 import { REWRITE_MODES } from '../constants.js';
@@ -17,53 +21,68 @@ const PANEL_HTML = `
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
-            <label class="checkbox_label" for="intercede_enabled">
-                <input type="checkbox" id="intercede_enabled">
-                <span>Enabled</span>
-            </label>
-            <label class="checkbox_label" for="intercede_show_button">
-                <input type="checkbox" id="intercede_show_button">
-                <span>Show Intercede button on the eligible message</span>
-            </label>
-            <label for="intercede_interface">Selection interface</label>
-            <select id="intercede_interface" class="text_pole">
-                <option value="inline">In place, on the message (glowing markers)</option>
-                <option value="window">Floating window</option>
-            </select>
-            <label for="intercede_boundaries">Selection boundaries</label>
-            <select id="intercede_boundaries" class="text_pole">
-                <option value="paragraph">Paragraphs only</option>
-                <option value="sentence">Paragraphs and sentences</option>
-            </select>
-            <label for="intercede_default_mode">Default rewrite mode</label>
-            <select id="intercede_default_mode" class="text_pole">
-                <option value="preserve">Preserve closely</option>
-                <option value="adaptive">Adapt naturally</option>
-                <option value="reimagine">Reimagine remainder</option>
-            </select>
-            <label class="checkbox_label" for="intercede_confirm">
-                <input type="checkbox" id="intercede_confirm">
-                <span>Show confirmation before mutating the chat</span>
-            </label>
-            <label class="checkbox_label" for="intercede_compare_after">
-                <input type="checkbox" id="intercede_compare_after">
-                <span>Show comparison after generation</span>
-            </label>
-            <label class="checkbox_label" for="intercede_warn_extensions">
-                <input type="checkbox" id="intercede_warn_extensions">
-                <span>Warn about continuation/memory extension conflicts</span>
-            </label>
-            <label for="intercede_snapshot_ttl">Delete unused undo snapshots after (days, 0 = keep forever)</label>
-            <input type="number" id="intercede_snapshot_ttl" class="text_pole" min="0" max="3650" step="1">
-            <div class="intercede-settings-actions">
-                <button type="button" id="intercede_cleanup_now" class="menu_button">Clean up stored snapshots now</button>
+            <div class="intercede-settings-section">
+                <div class="intercede-settings-heading">Behaviour</div>
+                <label class="checkbox_label" for="intercede_enabled">
+                    <input type="checkbox" id="intercede_enabled">
+                    <span>Enabled</span>
+                </label>
+                <label class="checkbox_label" for="intercede_show_button">
+                    <input type="checkbox" id="intercede_show_button">
+                    <span>Show Intercede button on the eligible message</span>
+                </label>
+                <label for="intercede_interface">Selection interface</label>
+                <select id="intercede_interface" class="text_pole">
+                    <option value="inline">In place, on the message (glowing markers)</option>
+                    <option value="window">Floating window</option>
+                </select>
+                <label for="intercede_boundaries">Selection boundaries</label>
+                <select id="intercede_boundaries" class="text_pole">
+                    <option value="paragraph">Paragraphs only</option>
+                    <option value="sentence">Paragraphs and sentences</option>
+                </select>
+                <label for="intercede_default_mode">Default rewrite mode</label>
+                <select id="intercede_default_mode" class="text_pole">
+                    <option value="preserve">Preserve closely</option>
+                    <option value="adaptive">Adapt naturally</option>
+                    <option value="reimagine">Reimagine remainder</option>
+                </select>
+                <small class="intercede-settings-note">
+                    Intercede works on the latest completed assistant message.
+                </small>
             </div>
-            <small class="intercede-settings-note">
-                Intercede works on the latest completed assistant message. Snapshots for undo are stored
-                locally in this browser and do not travel with exported chat files. Cleanup never removes
-                the snapshot behind an intercession that can still be undone — use
-                <code>/intercede finalize</code> to discard that one deliberately.
-            </small>
+            <div class="intercede-settings-section">
+                <div class="intercede-settings-heading">Safety</div>
+                <label class="checkbox_label" for="intercede_confirm">
+                    <input type="checkbox" id="intercede_confirm">
+                    <span>Show confirmation before mutating the chat</span>
+                </label>
+                <label class="checkbox_label" for="intercede_compare_after">
+                    <input type="checkbox" id="intercede_compare_after">
+                    <span>Show comparison after generation</span>
+                </label>
+                <label class="checkbox_label" for="intercede_warn_extensions">
+                    <input type="checkbox" id="intercede_warn_extensions">
+                    <span>Warn about continuation/memory extension conflicts</span>
+                </label>
+            </div>
+            <div class="intercede-settings-section">
+                <div class="intercede-settings-heading">Undo snapshots</div>
+                <div class="intercede-settings-row">
+                    <label for="intercede_snapshot_ttl">Delete unused after</label>
+                    <input type="number" id="intercede_snapshot_ttl" class="text_pole" min="0" max="3650" step="1">
+                    <span>days</span>
+                </div>
+                <small class="intercede-settings-note">
+                    0 keeps them forever. Snapshots are stored locally in this browser and do not travel
+                    with exported chat files. Cleanup never removes the snapshot behind an intercession
+                    that can still be undone — use <code>/intercede finalize</code> to discard that one
+                    deliberately.
+                </small>
+                <div class="intercede-settings-actions">
+                    <button type="button" id="intercede_cleanup_now" class="menu_button">Clean up now</button>
+                </div>
+            </div>
         </div>
     </div>
 </div>`;

@@ -29,6 +29,10 @@
     --ic-accent-dim: rgba(255, 255, 255, 0.08);
     --ic-accent-glow: rgba(255, 255, 255, 0.16);
     --ic-motion: var(--animation-duration, 125ms);
+    /* Resting visibility of an unhovered marker, shared by both interfaces so
+       the two do not drift apart. Hover/focus/selected override these. */
+    --ic-marker-rest: 0.4;
+    --ic-rule-rest: 0.3;
 }
 
 @supports (background: color-mix(in srgb, red 10%, transparent)) {
@@ -125,9 +129,32 @@
     text-overflow: ellipsis;
 }
 
+/* A quiet dismiss, not a .menu_button — it shares a panel with the primary
+   commit button and must not read at the same weight. */
 .intercede-close {
     aspect-ratio: 1;
     min-width: 2em;
+    padding: 0;
+    background: none;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 1em;
+    color: var(--SmartThemeBodyColor, rgb(220, 220, 210));
+    opacity: 0.7;
+    transition: opacity var(--ic-motion) ease, background-color var(--ic-motion) ease;
+}
+
+.intercede-close:hover {
+    opacity: 1;
+    background-color: var(--ic-accent-dim);
+}
+
+/* Dropping .menu_button drops ST's focus styling with it. */
+.intercede-close:focus-visible {
+    opacity: 1;
+    outline: 2px solid var(--ic-accent);
+    outline-offset: 1px;
 }
 
 .intercede-body {
@@ -195,7 +222,7 @@
     margin: 0.4em 0;
     padding: 0.15em 0.4em;
     border-radius: 6px;
-    opacity: 0.45;
+    opacity: var(--ic-marker-rest);
     font-size: 0.85em;
 }
 
@@ -213,7 +240,7 @@
     padding: 0 0.45em;
     margin: 0 0.2em;
     border-radius: 4px;
-    opacity: 0.35;
+    opacity: var(--ic-marker-rest);
     font-size: 0.9em;
 }
 
@@ -266,6 +293,14 @@
 .intercede-mode-select {
     flex: 1 1 180px;
     max-width: 240px;
+}
+
+/* Anchored right, so the row separates "which mode" from "do it / don't". */
+.intercede-composer-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-left: auto;
 }
 
 /* ST's .menu_button is width: min-content; inside .mes_text (overflow-wrap:
@@ -384,12 +419,51 @@
     gap: 6px;
 }
 
+.intercede-settings-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.intercede-settings-section + .intercede-settings-section {
+    margin-top: 14px;
+}
+
+/* Same treatment as .intercede-compare-heading, so the panel's section labels
+   read identically to the headings in the compare and confirmation views. */
+.intercede-settings-heading {
+    font-size: 0.85em;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--SmartThemeEmColor, rgb(145, 145, 145));
+}
+
 .intercede-settings-note {
     color: var(--SmartThemeEmColor, rgb(145, 145, 145));
 }
 
+.intercede-settings-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+/* ST's .text_pole is full width; a day count is at most four digits. */
+.intercede-settings-row input[type="number"] {
+    width: 5em;
+    flex: 0 0 auto;
+}
+
+/* Mirrors .intercede-modal-buttons: actions anchored right above a rule. */
 .intercede-settings-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
     margin-top: 4px;
+    padding-top: 8px;
+    border-top: 1px solid var(--SmartThemeBorderColor, rgba(0, 0, 0, 0.5));
 }
 
 /* ── In-place mode (markers rendered on the live message) ─────────────── */
@@ -411,7 +485,7 @@
 
 .intercede-imarker-glyph {
     border-radius: 4px;
-    opacity: 0.35;
+    opacity: var(--ic-marker-rest);
     white-space: nowrap;
     transition: opacity var(--ic-motion, 125ms) ease,
         background-color var(--ic-motion, 125ms) ease,
@@ -459,7 +533,7 @@
     right: 0;
     top: 50%;
     border-top: 1px dashed var(--ic-accent);
-    opacity: 0.3;
+    opacity: var(--ic-rule-rest);
     transition: opacity var(--ic-motion, 125ms) ease, filter var(--ic-motion, 125ms) ease;
 }
 
@@ -516,6 +590,12 @@
     .intercede-boundary-sentence {
         min-height: 1.8em;
         min-width: 1.8em;
+    }
+
+    /* Own row beneath the select rather than competing with it for width. */
+    .intercede-composer-actions {
+        flex: 1 1 100%;
+        margin-left: 0;
     }
 
     .intercede-composer-controls .menu_button {
