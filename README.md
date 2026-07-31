@@ -63,6 +63,7 @@ SillyTavern/public/scripts/extensions/third-party/Intercede
 | `/intercede recover` | Run crash-recovery for an interrupted intercession |
 | `/intercede finalize` | Delete the undo snapshot for the intercession at the chat tail (messages stay) |
 | `/intercede cleanup` | Delete unused undo snapshots older than the configured age |
+| `/intercede diagnostics` | Report generation state, host probe, and event tallies (also `Intercede.diagnostics()`) |
 
 ## Safety model
 
@@ -99,6 +100,11 @@ Interceding mutates canonical history, so every operation runs as a transaction:
   the instruction never reached. Overlap is tracked by counting generations rather than by
   a running/not-running flag, which cannot represent two at once and reads as idle the
   moment either one ends.
+- **Eligibility asks SillyTavern, not just its events** — "is a generation running?" is
+  answered by the host when it can answer, and only from Intercede's own event
+  bookkeeping when it cannot. A lifecycle event that never arrives can therefore no longer
+  leave the extension convinced a generation is running forever. `/intercede diagnostics`
+  reports which signal answered and what the event tallies look like.
 - **Validation** — after generation the three messages are verified against captured
   ownership (identity, markers, roles, prefix integrity, non-empty continuation), and
   verified *again* after `intercede_before_commit` in case a listener changed history.

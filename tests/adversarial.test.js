@@ -372,3 +372,92 @@ describe('non-matching generation interleaves after the instruction is installed
         expect(ctx.chat[1].mes).toBe(ORIGINAL);
     });
 });
+
+/**
+ * The field report: after an ordinary, successful intercession, undo answered
+ * "wait for the current generation to finish" with nothing running, and kept
+ * doing so until a reload.
+ *
+ * Modelled here as the general case rather than one suspected cause — a
+ * generation that resolves without ever emitting GENERATION_ENDED. Event
+ * bookkeeping alone can never clear that; only the host can.
+ *
+ * @see docs/RATIONALE.md#LEASE-10
+ */
+describe('generation resolves without its end event', () => {
+    /** SillyTavern that never emits GENERATION_ENDED, but does report idle. */
+    function generateWithoutEndEvent(ctx, text) {
+        return async () => {
+            ctx.isGenerating = true;
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, 'normal', {}, false);
+
+            const generated = assistantMessage(text);
+            ctx.chat.push(generated);
+            await ctx.eventSource.emit(ctx.eventTypes.MESSAGE_RECEIVED, ctx.chat.indexOf(generated), 'normal');
+
+            // The backend finishes. No GENERATION_ENDED is ever emitted.
+            ctx.isGenerating = false;
+        };
+    }
+
+    it('commits, then still permits undo', async () => {
+        const { ctx, transaction, lease } = await setup();
+        ctx.generate = vi.fn(generateWithoutEndEvent(ctx, 'Revised continuation. Second sentence.'));
+
+        const result = await runTransaction(transaction, { ctx, offset: CUT_OFFSET });
+        expect(result.ok).toBe(true);
+        expect(ctx.chat).toHaveLength(4);
+
+        // The record is still open — nothing closed it — but the host is idle.
+        expect(lease.getLeaseDiagnostics().events.ends).toBe(0);
+
+        const undone = await transaction.undoIntercession();
+        expect(undone.ok).toBe(true);
+        expect(ctx.chat).toHaveLength(2);
+        expect(ctx.chat[1].mes).toBe(ORIGINAL);
+    });
+
+    it('permits a second intercession without a reload', async () => {
+        const { ctx, transaction } = await setup();
+        ctx.generate = vi.fn(generateWithoutEndEvent(ctx, 'First continuation. Second sentence.'));
+
+        expect((await runTransaction(transaction, { ctx, offset: CUT_OFFSET })).ok).toBe(true);
+
+        ctx.generate = vi.fn(generateWithoutEndEvent(ctx, 'Second continuation. Third sentence.'));
+        const again = await runTransaction(transaction, { ctx, offset: 21 });
+        expect(again.ok).toBe(true);
+    });
+
+    it('still refuses while the host reports a generation running', async () => {
+        const { ctx, transaction } = await setup();
+
+        await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, 'normal', {}, false);
+        ctx.isGenerating = true;
+
+        await expect(runTransaction(transaction, { ctx, offset: CUT_OFFSET }))
+            .rejects.toThrow(/finish/i);
+        expect(ctx.chat).toHaveLength(2);
+    });
+
+    // Reconciliation must not become a way around interference detection.
+    it('still rejects a nested generation that strips the instruction', async () => {
+        const { ctx, transaction } = await setup();
+
+        ctx.generate = vi.fn(async () => {
+            ctx.isGenerating = true;
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, 'normal', {}, false);
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, 'quiet', {}, false);
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, 'quiet');
+
+            const real = assistantMessage('Continuation produced after prompt loss.');
+            ctx.chat.push(real);
+            await ctx.eventSource.emit(ctx.eventTypes.MESSAGE_RECEIVED, ctx.chat.indexOf(real), 'normal');
+            ctx.isGenerating = false;
+        });
+
+        await expect(runTransaction(transaction, { ctx, offset: CUT_OFFSET }))
+            .rejects.toThrow(/overlap/i);
+        expect(ctx.chat).toHaveLength(2);
+        expect(ctx.chat[1].mes).toBe(ORIGINAL);
+    });
+});

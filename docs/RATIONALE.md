@@ -142,8 +142,9 @@ Version-one eligibility: the latest, completed, non-system assistant message in 
 non-group chat, while nothing is generating. A revised continuation left by an earlier
 intercession qualifies like any other assistant message.
 
-"While nothing is generating" is answered by the open-generation count
-([LEASE-04](#LEASE-04)), not by a flag that the most recent event happened to set. This
+"While nothing is generating" is answered by `isGenerationActive()`, which asks the host
+and falls back to the open-generation records ([LEASE-10](#LEASE-10),
+[LEASE-04](#LEASE-04)) — never by a flag that the most recent event happened to set. This
 check is the first line of defence against overlap, and the only one that stops it before
 any mutation — but it is not the last, because several `await`s separate it from
 `armLease()` and a generation can start inside that window.
@@ -467,8 +468,8 @@ Two failures it exposes:
 
 <a id="LEASE-04"></a>
 ### LEASE-04 — Open-generation count
-**Sites:** `src/lease.js` › `openGenerations`, `isGenerationActive()`, `armLease()`, `onGenerationStarted()`, `onGenerationEnded()`
-**Guards:** INV-11 **Related:** [LEASE-05](#LEASE-05), [LEASE-09](#LEASE-09), [TX-03](#TX-03), [TX-17](#TX-17)
+**Sites:** `src/lease.js` › `openGenerations`, `openCount()`, `closeOpenGeneration()`, `armLease()`, `onGenerationStarted()`, `onGenerationEnded()`
+**Guards:** INV-11 **Related:** [LEASE-05](#LEASE-05), [LEASE-09](#LEASE-09), [LEASE-10](#LEASE-10), [TX-03](#TX-03), [TX-17](#TX-17)
 
 An interfering *start* is not the only way the instruction gets pulled. A generation
 already running when it is installed will clear the prompt at its own `GENERATION_ENDED`
@@ -477,9 +478,9 @@ already running when it is installed will clear the prompt at its own `GENERATIO
 Counting instead lets the apply step notice that it is not alone, which is the same fact
 one step earlier, at a moment when identity is still known.
 
-**`openGenerations` is the only record of what is running.** There is no companion
-boolean, and `isGenerationActive()` derives from the count. A boolean cannot represent
-two overlapping generations, so any end sets it false while another is still open:
+**`openGenerations` is the only event-derived record of what is running** — one entry per
+start, closed by an end. There is no companion boolean. A boolean cannot represent two
+overlapping generations, so any end sets it false while another is still open:
 
 ```
 foreign A starts      active = true    open = 1
@@ -502,12 +503,20 @@ carried in the receipt for diagnostics only and does not itself trigger rejectio
 baselined generation is still open at apply time, `open > 1` already catches it, and if
 it ended first it cleared the prompt *before* installation, which is harmless.
 
-> **The trade this accepts.** A start whose end never arrives leaves the count high, and
-> `isGenerationActive()` then reports a generation forever: preflight refuses every
-> intercession and the settle wait in [TX-17](#TX-17) burns its full timeout. That is bad, but it
-> is loud, and it clears on a chat change or a reload. A false *zero* is silent and
-> commits a continuation the instruction never reached. When the count can only be wrong
-> in one direction, it must be this one.
+`GENERATION_ENDED` carries a kind but no identity, so an end closes the most recent open
+record of the same kind, falling back to the most recent record of any kind. Two
+concurrent generations of the same kind are genuinely indistinguishable; the fallback is
+tallied as a kind mismatch rather than hidden ([LEASE-11](#LEASE-11)).
+
+> **The trade this accepts, and its limit.** A start whose end never arrives leaves a
+> record open forever. Counting can only be wrong upward, which is the right direction —
+> a false *zero* is silent and commits a continuation the instruction never reached,
+> while a false *positive* merely refuses to work.
+>
+> But "merely refuses to work" was too generous. In the field this locked the extension
+> out of its own chat until a reload. Refusing forever is not an acceptable resting
+> state, which is why [LEASE-10](#LEASE-10) lets the host overrule the count — without
+> ever letting it overrule an interference decision already made.
 
 <a id="LEASE-09"></a>
 ### LEASE-09 — Only an end decrements
@@ -520,9 +529,10 @@ does **not** decrement. SillyTavern emits it from `stopGeneration()` while the a
 `GENERATION_ENDED` too. Decrementing on both would drop the count below what is actually
 running — the one direction [LEASE-04](#LEASE-04) cannot tolerate.
 
-`CHAT_CHANGED` is the single place the count is reset, and it resets to zero: nothing
-that was running before the chat changed can still be assembling a prompt for this one.
-It is also the user-reachable escape hatch if the count ever does drift high.
+`CHAT_CHANGED` is the single place the records are dropped wholesale: nothing that was
+running before the chat changed can still be assembling a prompt for this one. It remains
+the user-reachable escape hatch, though [LEASE-10](#LEASE-10) should mean nobody needs
+it.
 
 <a id="LEASE-05"></a>
 ### LEASE-05 — Prompt integrity after installation
@@ -580,12 +590,75 @@ zeroes the open-generation count.
 
 <a id="LEASE-08"></a>
 ### LEASE-08 — Dry runs are deliberately exempt
-**Sites:** `src/lease.js` › `onGenerationStarted()`
-**Related:** [CAP-04](#CAP-04)
+**Sites:** `src/lease.js` › `isDryRunSignal()`, `onGenerationStarted()`
+**Related:** [CAP-04](#CAP-04), [LEASE-10](#LEASE-10)
 
 A dry run is a prompt-assembly probe, not a generation: the handler returns before any
 sequencing or counting. This exemption is pinned by a test so it stays deliberate rather
 than incidental.
+
+**A missed dry run is not a harmless miscount.** Dry runs emit `GENERATION_STARTED` and
+never emit `GENERATION_ENDED`, so one counted as real is an open record that can never be
+closed — the extension then believes a generation is running forever. That is the single
+cheapest way to lock Intercede out of its own chat.
+
+The signal is therefore read positionally-agnostically: a boolean `true` anywhere in the
+event arguments after the type means dry run. The handler does not assume `(type,
+options, dryRun)`, because a build that emits `(type, dryRun)` would otherwise slot the
+flag into `options` and read `dryRun` as `undefined`. An options object is never `true`,
+so widening the check costs nothing.
+
+<a id="LEASE-10"></a>
+### LEASE-10 — The host outranks our bookkeeping
+**Sites:** `src/lease.js` › `isGenerationActive()`, `reconcileWithHost()`; `src/stcontext.js` › `probeHostGeneration()`
+**Guards:** INV-11 **Related:** [HOST-06](#HOST-06), [LEASE-04](#LEASE-04), [TX-03](#TX-03)
+
+Counting events is only as good as the events. A start whose end never arrives — a
+misread dry run ([LEASE-08](#LEASE-08)), a host path that skips `GENERATION_ENDED` —
+leaves a record open forever, and a count that can only be wrong upward turns into a
+permanent refusal to do anything. That was observed in the field: undo and every new
+intercession answering "wait for the current generation to finish" with nothing running,
+until the chat changed or the page reloaded.
+
+So eligibility asks the host first ([HOST-06](#HOST-06)) and falls back to the count only
+when the host cannot answer — `unknown` is the only case where our bookkeeping decides.
+
+Two separable acts hide in that sentence, and they carry different risk:
+
+- **Answering the question.** If the host says idle, `isGenerationActive()` returns false,
+  full stop. This is always safe: it reports host state, it destroys nothing, and being
+  wrong costs at most one transaction that should have waited.
+- **Dropping the open records.** Destructive, because those records are what the next
+  `armLease()` baselines against. This happens **only when no lease is armed.** With no
+  transaction in flight there is no interference decision to corrupt: the next
+  `armLease()` simply takes a fresh baseline. This is what keeps a weak idle signal from
+  silently undoing [LEASE-04](#LEASE-04).
+
+> **The residual risk, stated plainly.** If the host reports idle while a background
+> generation really is running, the following transaction arms with a baseline of zero
+> and cannot see that generation strip its instruction. That is the [LEASE-05](#LEASE-05)
+> hole, reopened for exactly one case: a host signal that does not cover background
+> generations. `#mes_stop` is such a signal, which is why its idle answer is marked weak
+> and reported as such in diagnostics. A strong signal — one the host sets for every
+> generation — closes this completely.
+
+There is deliberately **no timeout-based reset**. Age is not evidence: a slow backend and
+a lost event look identical, and a reset on a timer would resurrect the silent-commit
+failure on exactly the slow generations most likely to be interfered with.
+
+<a id="LEASE-11"></a>
+### LEASE-11 — Diagnostics are part of the safety story
+**Sites:** `src/lease.js` › `getLeaseDiagnostics()`; `index.js` › `collectDiagnostics()`
+**Related:** [LEASE-10](#LEASE-10), [HOST-06](#HOST-06)
+
+Every assumption this module makes about host events is unverifiable from inside the
+repository, so `/intercede diagnostics` reports what actually happened: which probe
+answered and how confidently, what is still open and for how long, and tallies of starts,
+ends, dry runs, unmatched ends, kind-mismatched ends, stops, and host reconciliations.
+
+The tallies are the discriminator. Dry runs climbing alongside a stuck open record points
+at [LEASE-08](#LEASE-08); unmatched ends point at a host emitting ends we never saw start;
+reconciliations climbing means the counter is leaking and the host is covering for it.
 
 ---
 
@@ -825,6 +898,34 @@ and must not start a transaction.
 
 localforage bundled with SillyTavern when available, otherwise a localStorage-backed
 stand-in with the same async surface.
+
+<a id="HOST-06"></a>
+### HOST-06 — Asking the host whether it is generating
+**Sites:** `src/stcontext.js` › `probeHostGeneration()`
+**Related:** [LEASE-10](#LEASE-10), [HOST-01](#HOST-01)
+
+Returns `busy`, `idle`, or `unknown`, plus the probe that answered and how much its
+*idle* answer is worth. Probes are tried in descending confidence:
+
+| Probe | Busy | Idle |
+|---|---|---|
+| `ctx.isGenerating` (boolean) | strong | strong |
+| `ctx.streamingProcessor` with `isFinished === false` | strong | — |
+| `#mes_stop` visible | strong | weak |
+| nothing present | `unknown` | `unknown` |
+
+**Confidence is asymmetric, and that asymmetry is the whole design.** A visible stop
+button proves a generation is running. A hidden one proves only that no *user-facing*
+generation is running — background and quiet generations need not show it. So the same
+probe is trusted absolutely for `busy` and only provisionally for `idle`, which is why
+[LEASE-10](#LEASE-10) fences what an idle answer is allowed to do.
+
+`unknown` is a real answer and must not be collapsed into `idle`. A build exposing none of
+these falls back to event counting, which is worse but is not wrong by default.
+
+Reading `#mes_stop` is a DOM read of a stable, user-visible control, not a reach into
+client internals ([HOST-01](#HOST-01)). It is the last resort precisely because it is the
+weakest.
 
 ---
 

@@ -8,7 +8,7 @@
 
 import { EXTENSION_PROMPT_KEY, LEASE_TTL_MS, METADATA_KEY } from './constants.js';
 import { buildRewritePrompt } from './prompt.js';
-import { getChatMetadata, getCtx, getCurrentChatId, getEventSource, getEventTypes, getPromptRoles, getPromptTypes } from './stcontext.js';
+import { getChatMetadata, getCtx, getCurrentChatId, getEventSource, getEventTypes, getPromptRoles, getPromptTypes, probeHostGeneration } from './stcontext.js';
 import { vaultGet, vaultGetCached } from './vault.js';
 
 /** @type {{ transactionId: string, prompt: string, chatId: string, kinds: Set<string>, armedAt: number } | null} */
@@ -18,10 +18,50 @@ let initialized = false;
 /** Monotonic generation-start counter. @see docs/RATIONALE.md#LEASE-03 */
 let generationStartSequence = 0;
 /**
- * Generations begun but not yet ended — the sole record of what is running.
+ * Generations begun but not yet ended, oldest first.
+ * @type {Array<{ sequence: number, kind: string, startedAt: number }>}
  * @see docs/RATIONALE.md#LEASE-04
  */
-let openGenerations = 0;
+let openGenerations = [];
+
+/** Event-hygiene tallies, surfaced by getLeaseDiagnostics(). @see docs/RATIONALE.md#LEASE-10 */
+const tallies = {
+    starts: 0,
+    dryRuns: 0,
+    ends: 0,
+    unmatchedEnds: 0,
+    kindMismatchedEnds: 0,
+    reconciledFromHostIdle: 0,
+    stops: 0,
+};
+
+function openCount() {
+    return openGenerations.length;
+}
+
+/**
+ * A dry run is announced by a boolean `true` among the event arguments.
+ * @see docs/RATIONALE.md#LEASE-08 why the position is not assumed
+ */
+function isDryRunSignal(args) {
+    return args.some(arg => arg === true);
+}
+
+/**
+ * Drop open records the host contradicts.
+ * @see docs/RATIONALE.md#LEASE-10 — only with no lease armed, only on a positive idle
+ * @returns {boolean} true when the host positively reported idle
+ */
+function reconcileWithHost() {
+    const probe = probeHostGeneration();
+    if (probe.state !== 'idle') return false;
+    if (currentLease) return false;
+    if (openGenerations.length) {
+        tallies.reconciledFromHostIdle += openGenerations.length;
+        openGenerations = [];
+    }
+    return true;
+}
 
 /**
  * What became of one transaction's lease. Outlives the lease itself.
@@ -65,7 +105,7 @@ export function armLease({ transactionId, prompt, chatId, kinds = ['normal'] }) 
         chatId,
         kinds: kindSet,
         // @see docs/RATIONALE.md#LEASE-04 — recorded, never reset
-        baselineOpenGenerations: openGenerations,
+        baselineOpenGenerations: openCount(),
         matchingStarts: 0,
         applied: false,
         appliedSequence: null,
@@ -107,9 +147,40 @@ export function isLeaseArmed() {
     return currentLease !== null;
 }
 
-/** @see docs/RATIONALE.md#LEASE-04 — the count, not a boolean, answers this */
+/**
+ * Is a generation running right now?
+ *
+ * The host answers when it can; our own event bookkeeping is the fallback for
+ * builds that expose nothing. @see docs/RATIONALE.md#LEASE-10
+ */
 export function isGenerationActive() {
-    return openGenerations > 0;
+    const probe = probeHostGeneration();
+    if (probe.state === 'busy') return true;
+    if (probe.state === 'idle') {
+        // Answering is always safe; dropping records is what needs a fence.
+        reconcileWithHost();
+        return false;
+    }
+    return openCount() > 0;
+}
+
+/**
+ * Everything the lease knows about generation lifecycle events on this build.
+ * @see docs/RATIONALE.md#LEASE-11 — what to look at first when it misbehaves
+ */
+export function getLeaseDiagnostics() {
+    const probe = probeHostGeneration();
+    return {
+        host: probe,
+        open: openGenerations.map(record => ({ ...record, ageMs: Date.now() - record.startedAt })),
+        openCount: openCount(),
+        generationStartSequence,
+        stoppedFlag,
+        leaseArmed: currentLease !== null,
+        auditTransactionId: leaseAudit?.transactionId ?? null,
+        auditClosed: leaseAudit?.closed ?? null,
+        events: { ...tallies },
+    };
 }
 
 /** True when GENERATION_STOPPED fired since the flag was last reset. */
@@ -134,15 +205,20 @@ function getTipSuffixRecord(ctx) {
     return record;
 }
 
-async function onGenerationStarted(type, _params, dryRun) {
-    if (dryRun) return; // @see docs/RATIONALE.md#LEASE-08 (deliberate exemption)
+async function onGenerationStarted(type, ...rest) {
+    // @see docs/RATIONALE.md#LEASE-08 (deliberate exemption)
+    if (isDryRunSignal(rest)) {
+        tallies.dryRuns += 1;
+        return;
+    }
     stoppedFlag = false;
 
     const kind = normalizeType(type);
     const ctx = getCtx();
 
     generationStartSequence += 1;
-    openGenerations += 1;
+    tallies.starts += 1;
+    openGenerations.push({ sequence: generationStartSequence, kind, startedAt: Date.now() });
 
     // @see docs/RATIONALE.md#LEASE-03 (matching) and #LEASE-05 (interfering)
     if (leaseAudit && !leaseAudit.closed) {
@@ -170,7 +246,7 @@ async function onGenerationStarted(type, _params, dryRun) {
                 leaseAudit.applied = true;
                 leaseAudit.appliedSequence = generationStartSequence;
                 // @see docs/RATIONALE.md#LEASE-04
-                if (openGenerations > 1) leaseAudit.promptIntegrityLost = true;
+                if (openCount() > 1) leaseAudit.promptIntegrityLost = true;
             }
         } else {
             disarmLease();
@@ -189,14 +265,37 @@ async function onGenerationStarted(type, _params, dryRun) {
     }
 }
 
-function onGenerationEnded() {
-    openGenerations = Math.max(0, openGenerations - 1);
+/**
+ * Close the open record this end most plausibly belongs to.
+ * @see docs/RATIONALE.md#LEASE-04 — the event names a kind, never an identity
+ */
+function closeOpenGeneration(type) {
+    tallies.ends += 1;
+    if (!openGenerations.length) {
+        tallies.unmatchedEnds += 1;
+        return;
+    }
+    const kind = normalizeType(type);
+    let index = -1;
+    for (let i = openGenerations.length - 1; i >= 0; i--) {
+        if (openGenerations[i].kind === kind) { index = i; break; }
+    }
+    if (index === -1) {
+        tallies.kindMismatchedEnds += 1;
+        index = openGenerations.length - 1;
+    }
+    openGenerations.splice(index, 1);
+}
+
+function onGenerationEnded(type) {
+    closeOpenGeneration(type);
     if (currentLease) currentLease = null;
     clearPrompt();
 }
 
-/** @see docs/RATIONALE.md#LEASE-09 — a stop does not decrement; its end does */
+/** @see docs/RATIONALE.md#LEASE-09 — a stop does not close a record; its end does */
 function onGenerationStopped() {
+    tallies.stops += 1;
     stoppedFlag = true;
     if (currentLease) currentLease = null;
     clearPrompt();
@@ -213,9 +312,9 @@ export function initLease() {
     if (eventTypes.GENERATION_ENDED) eventSource.on(eventTypes.GENERATION_ENDED, onGenerationEnded);
     if (eventTypes.GENERATION_STOPPED) eventSource.on(eventTypes.GENERATION_STOPPED, onGenerationStopped);
     if (eventTypes.CHAT_CHANGED) {
-        // @see docs/RATIONALE.md#LEASE-09 — the one place the count is reset
+        // @see docs/RATIONALE.md#LEASE-09 — the one place the records are dropped wholesale
         eventSource.on(eventTypes.CHAT_CHANGED, () => {
-            openGenerations = 0;
+            openGenerations = [];
             disarmLease();
         });
     }

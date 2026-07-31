@@ -111,6 +111,42 @@ export function saveSettings(ctx = getCtx()) {
     ctx?.saveSettingsDebounced?.();
 }
 
+/**
+ * Ask the host whether a generation is running, without depending on events.
+ *
+ * @see docs/RATIONALE.md#HOST-06 why this exists and how far each answer is trusted
+ * @returns {{ state: 'busy'|'idle'|'unknown', source: string, confidence: 'strong'|'weak'|'none' }}
+ */
+export function probeHostGeneration(ctx = getCtx()) {
+    if (typeof ctx?.isGenerating === 'boolean') {
+        return {
+            state: ctx.isGenerating ? 'busy' : 'idle',
+            source: 'ctx.isGenerating',
+            confidence: 'strong',
+        };
+    }
+
+    const streaming = ctx?.streamingProcessor;
+    if (streaming && streaming.isFinished === false) {
+        return { state: 'busy', source: 'ctx.streamingProcessor', confidence: 'strong' };
+    }
+
+    const stopButton = typeof document !== 'undefined'
+        ? document.querySelector('#mes_stop')
+        : null;
+    if (stopButton) {
+        let visible = false;
+        try {
+            visible = globalThis.getComputedStyle(stopButton).display !== 'none';
+        } catch { /* treated as hidden below */ }
+        return visible
+            ? { state: 'busy', source: '#mes_stop', confidence: 'strong' }
+            : { state: 'idle', source: '#mes_stop', confidence: 'weak' };
+    }
+
+    return { state: 'unknown', source: 'none', confidence: 'none' };
+}
+
 /** localforage, or a localStorage stand-in. @see docs/RATIONALE.md#HOST-05 */
 export function getStorageBackend() {
     const lf = globalThis.SillyTavern?.libs?.localforage ?? globalThis.localforage;

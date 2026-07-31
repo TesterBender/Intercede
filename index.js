@@ -10,10 +10,11 @@
  */
 
 import { INTERCEDE_EVENTS } from './src/constants.js';
-import { initLease } from './src/lease.js';
+import { getLeaseDiagnostics, initLease, isGenerationActive } from './src/lease.js';
 import {
     checkCapabilities,
     getCtx,
+    getCurrentChatId,
     getEventSource,
     getEventTypes,
     getSettings,
@@ -25,7 +26,7 @@ import { showConfirm } from './src/ui/modal.js';
 import { closeAllModes, openIntercede } from './src/ui/open.js';
 import { initSettingsPanel } from './src/ui/settings.js';
 import { notify, waitUntil } from './src/utils.js';
-import { cleanupVault, vaultKeys } from './src/vault.js';
+import { cleanupVault, readJournal, vaultKeys } from './src/vault.js';
 
 const VERSION = '0.5.0';
 
@@ -57,6 +58,12 @@ async function handleSlashCommand(action) {
             refreshButtonVisibilityDebounced();
             return '';
         }
+        case 'diagnostics': {
+            const report = collectDiagnostics();
+            console.info('[Intercede] diagnostics', report);
+            notify('info', describeDiagnostics(report));
+            return JSON.stringify(report, null, 2);
+        }
         case 'cleanup': {
             const days = getSettings().snapshotTtlDays;
             const removed = days > 0 ? await cleanupVault(days) : 0;
@@ -67,9 +74,45 @@ async function handleSlashCommand(action) {
             return '';
         }
         default:
-            notify('warning', `Unknown /intercede action "${action}". Use: undo, compare, recover, finalize, cleanup.`);
+            notify('warning', `Unknown /intercede action "${action}". Use: undo, compare, recover, finalize, cleanup, diagnostics.`);
             return '';
     }
+}
+
+/**
+ * A snapshot of everything that decides eligibility, for bug reports.
+ * @see docs/RATIONALE.md#LEASE-11
+ */
+function collectDiagnostics() {
+    const ctx = getCtx();
+    const lease = getLeaseDiagnostics();
+    return {
+        version: VERSION,
+        capabilities: checkCapabilities(),
+        eligibility: {
+            generationActive: isGenerationActive(),
+            hostSays: lease.host,
+            openGenerations: lease.openCount,
+        },
+        lease,
+        journal: readJournal(),
+        chat: {
+            id: getCurrentChatId(ctx),
+            length: Array.isArray(ctx?.chat) ? ctx.chat.length : null,
+        },
+    };
+}
+
+function describeDiagnostics(report) {
+    const { hostSays, openGenerations, generationActive } = report.eligibility;
+    const { unmatchedEnds, dryRuns, starts, ends } = report.lease.events;
+    return [
+        `generation ${generationActive ? 'ACTIVE' : 'idle'}`,
+        `host ${hostSays.state} via ${hostSays.source}`,
+        `${openGenerations} open`,
+        `${starts} starts / ${ends} ends / ${dryRuns} dry runs / ${unmatchedEnds} unmatched ends`,
+        'full report in the browser console',
+    ].join(' — ');
 }
 
 function registerSlashCommands(ctx) {
@@ -79,7 +122,7 @@ function registerSlashCommands(ctx) {
             const unnamedArgumentList = [];
             if (SlashCommandArgument?.fromProps) {
                 unnamedArgumentList.push(SlashCommandArgument.fromProps({
-                    description: 'action: undo | compare | recover | finalize | cleanup (empty opens boundary selection)',
+                    description: 'action: undo | compare | recover | finalize | cleanup | diagnostics (empty opens boundary selection)',
                     typeList: ARGUMENT_TYPE ? [ARGUMENT_TYPE.STRING] : undefined,
                     isRequired: false,
                 }));
@@ -88,7 +131,7 @@ function registerSlashCommands(ctx) {
                 name: 'intercede',
                 callback: (_namedArgs, value) => handleSlashCommand(value),
                 unnamedArgumentList,
-                helpString: 'Respond inside the latest completed assistant message. Actions: <code>undo</code>, <code>compare</code>, <code>recover</code>, <code>finalize</code>, <code>cleanup</code>.',
+                helpString: 'Respond inside the latest completed assistant message. Actions: <code>undo</code>, <code>compare</code>, <code>recover</code>, <code>finalize</code>, <code>cleanup</code>, <code>diagnostics</code>.',
             }));
             return;
         }
@@ -97,7 +140,7 @@ function registerSlashCommands(ctx) {
                 'intercede',
                 (_namedArgs, value) => handleSlashCommand(value),
                 [],
-                '<span class="monospace">(undo | compare | recover | finalize | cleanup)</span> – respond inside the latest assistant message',
+                '<span class="monospace">(undo | compare | recover | finalize | cleanup | diagnostics)</span> – respond inside the latest assistant message',
                 true,
                 true,
             );
@@ -163,6 +206,7 @@ async function init() {
         undo: undoIntercession,
         compare: showCompare,
         recover: checkRecovery,
+        diagnostics: collectDiagnostics,
         events: INTERCEDE_EVENTS,
     });
 
