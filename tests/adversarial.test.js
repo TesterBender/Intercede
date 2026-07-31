@@ -190,3 +190,147 @@ describe('unrelated normal generation consumes the lease first', () => {
         expect(ctx.chat.some(m => getIntercedeMarker(m)?.role === 'suffix')).toBe(false);
     });
 });
+
+/**
+ * A generation that begins *after* the rewrite instruction was installed, but
+ * before SillyTavern has assembled the prompt for the generation it was
+ * installed for.
+ *
+ * SillyTavern awaits GENERATION_STARTED and runs its listeners sequentially,
+ * and extension prompts are only collected substantially later in prompt
+ * preparation. A listener that calls generateQuietPrompt() therefore runs a
+ * whole nested generation *inside* the start event of ours. Intercede correctly
+ * refuses to let its instruction enter that foreign request — but clearing the
+ * prompt is exactly what strips it from our own pending generation, and the
+ * lease audit would otherwise still report a clean `applied: true`.
+ *
+ * The reply is genuinely ours in these cases, so the right outcome is a clean
+ * selective rollback rather than recovery-required.
+ */
+describe('non-matching generation interleaves after the instruction is installed', () => {
+    /**
+     * @param {string} nestedKind generation type of the interfering generation
+     */
+    function nestedGeneration(ctx, nestedKind) {
+        let launched = false;
+
+        // Registered after initLease(), so it runs after Intercede's own
+        // GENERATION_STARTED listener has installed the prompt.
+        ctx.eventSource.on(ctx.eventTypes.GENERATION_STARTED, async (type, _params, dryRun) => {
+            if (dryRun || launched) return;
+            if ((type ?? 'normal') !== 'normal') return;
+            launched = true;
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, nestedKind, {}, false);
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, nestedKind);
+        });
+
+        return async () => {
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, 'normal', {}, false);
+
+            const real = assistantMessage('Continuation produced after prompt loss.');
+            ctx.chat.push(real);
+            await ctx.eventSource.emit(ctx.eventTypes.MESSAGE_RECEIVED, ctx.chat.indexOf(real), 'normal');
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, 'normal');
+        };
+    }
+
+    for (const kind of ['quiet', 'impersonate', 'continue']) {
+        it(`rolls back when a nested ${kind} generation strips the instruction`, async () => {
+            const { ctx, transaction } = await setup();
+            ctx.generate = vi.fn(nestedGeneration(ctx, kind));
+
+            await expect(runTransaction(transaction, { ctx, offset: CUT_OFFSET }))
+                .rejects.toThrow(/overlap/i);
+
+            // Clean rollback: the target is whole again and our own reply is gone.
+            expect(ctx.chat).toHaveLength(2);
+            expect(ctx.chat[1].mes).toBe(ORIGINAL);
+            expect(ctx.chat.some(m => getIntercedeMarker(m))).toBe(false);
+            expect(Object.keys(ctx.chatMetadata?.intercede?.transactions ?? {})).toHaveLength(0);
+            expect(transaction.isRecoveryRequired()).toBe(false);
+        });
+    }
+
+    // A dry run is a prompt-assembly probe, not a generation: the handler
+    // returns before it counts anything. Asserting that keeps the exemption
+    // deliberate rather than incidental.
+    it('ignores a nested dry run', async () => {
+        const { ctx, transaction } = await setup();
+
+        let launched = false;
+        ctx.eventSource.on(ctx.eventTypes.GENERATION_STARTED, async (type, _params, dryRun) => {
+            if (dryRun || launched) return;
+            if ((type ?? 'normal') !== 'normal') return;
+            launched = true;
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, 'quiet', {}, true);
+        });
+
+        ctx.generate = vi.fn(async () => {
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, 'normal', {}, false);
+            const real = assistantMessage('Revised continuation. Second sentence.');
+            ctx.chat.push(real);
+            await ctx.eventSource.emit(ctx.eventTypes.MESSAGE_RECEIVED, ctx.chat.indexOf(real), 'normal');
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, 'normal');
+        });
+
+        const result = await runTransaction(transaction, { ctx, offset: CUT_OFFSET });
+        expect(result.ok).toBe(true);
+    });
+
+    // The instruction can also be lost without any interfering *start* to
+    // observe: a generation already running when it is installed clears the
+    // prompt at its own GENERATION_ENDED, and that event names no owner. Here
+    // another extension reacts to the inserted user message by starting one.
+    it('rolls back when a generation was already running as the instruction was installed', async () => {
+        const { ctx, transaction } = await setup();
+
+        ctx.eventSource.on(ctx.eventTypes.USER_MESSAGE_RENDERED, async () => {
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, 'quiet', {}, false);
+        });
+
+        ctx.generate = vi.fn(async () => {
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, 'normal', {}, false);
+
+            const real = assistantMessage('Continuation produced after prompt loss.');
+            ctx.chat.push(real);
+            await ctx.eventSource.emit(ctx.eventTypes.MESSAGE_RECEIVED, ctx.chat.indexOf(real), 'normal');
+
+            // The foreign generation finishes during ours and clears the prompt.
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, 'quiet');
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, 'normal');
+        });
+
+        await expect(runTransaction(transaction, { ctx, offset: CUT_OFFSET }))
+            .rejects.toThrow(/overlap/i);
+
+        expect(ctx.chat).toHaveLength(2);
+        expect(ctx.chat[1].mes).toBe(ORIGINAL);
+        expect(ctx.chat.some(m => getIntercedeMarker(m))).toBe(false);
+        expect(transaction.isRecoveryRequired()).toBe(false);
+    });
+
+    // Ordering matters: a non-matching generation that arrives *before* the
+    // instruction is installed disarms the lease instead, so the failure is the
+    // already-covered "never applied" one rather than integrity loss. Both roll
+    // back cleanly; this pins which diagnosis the user is given.
+    it('reports never-applied, not overlap, when the quiet generation comes first', async () => {
+        const { ctx, transaction } = await setup();
+
+        ctx.generate = vi.fn(async () => {
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, 'quiet', {}, false);
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, 'quiet');
+
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, 'normal', {}, false);
+            const real = assistantMessage('Uninstructed continuation.');
+            ctx.chat.push(real);
+            await ctx.eventSource.emit(ctx.eventTypes.MESSAGE_RECEIVED, ctx.chat.indexOf(real), 'normal');
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, 'normal');
+        });
+
+        await expect(runTransaction(transaction, { ctx, offset: CUT_OFFSET }))
+            .rejects.toThrow(/never applied/i);
+
+        expect(ctx.chat).toHaveLength(2);
+        expect(ctx.chat[1].mes).toBe(ORIGINAL);
+    });
+});

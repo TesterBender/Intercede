@@ -91,6 +91,12 @@ Interceding mutates canonical history, so every operation runs as a transaction:
   `generate()` call that consumed it. If an unrelated generation takes the instruction, or
   more than one matching generation runs while Intercede is waiting, the reply cannot be
   attributed and the intercession stops without claiming it.
+- **Uninterrupted instruction** — installing the instruction is not the same as it
+  surviving until SillyTavern assembles the prompt. Because clearing it is also how
+  Intercede keeps it out of other requests, any generation that overlaps the one it was
+  installed for — nested inside the start event, or already running — silently strips it.
+  Intercede detects both and rolls its own continuation back rather than committing a reply
+  the instruction never reached.
 - **Validation** — after generation the three messages are verified against captured
   ownership (identity, markers, roles, prefix integrity, non-empty continuation), and
   verified *again* after `intercede_before_commit` in case a listener changed history.

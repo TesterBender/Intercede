@@ -27,22 +27,42 @@ let initialized = false;
  * with the specific `generate()` call the transaction made.
  */
 let generationStartSequence = 0;
+/**
+ * Generations begun but not yet ended.
+ *
+ * An interfering *start* is not the only way the instruction gets pulled: a
+ * generation already running when it is installed will clear the prompt at its
+ * own GENERATION_ENDED, and GENERATION_ENDED carries nothing that identifies
+ * whose end it is. Counting instead lets the apply step notice that it is not
+ * alone, which is the same fact one step earlier.
+ *
+ * Re-baselined at arm time from `generationActive` — the signal preflight
+ * already trusts — so an unpaired GENERATION_ENDED cannot make the count drift
+ * across transactions and start reporting interference that is not there.
+ */
+let openGenerations = 0;
 
 /**
  * Audit of what actually happened to one transaction's lease.
  *
- * Armed is not the same as applied, and applied is not the same as applied *to
- * our generation*. Two distinct failures hide here:
+ * Armed is not the same as applied, applied is not the same as applied *to our
+ * generation*, and none of those is the same as *still installed when the
+ * prompt was assembled*. Three distinct failures hide here:
  *
  *   - A generation Intercede did not start arrives first and consumes the
  *     lease. Intercede's own generation then runs with no rewrite instruction
  *     and produces an ordinary continuation that looks perfectly valid.
  *   - Any second matching generation while the lease is open makes it
  *     impossible to say which one carried the instruction.
+ *   - A non-matching generation begins *after* the instruction was installed
+ *     but before SillyTavern collects extension prompts for the generation it
+ *     was installed for. Refusing to let the instruction enter that foreign
+ *     request is correct, but it is also what strips it from ours.
  *
- * Counting matching starts and recording the sequence number at which the
- * prompt was installed lets the transaction reject both instead of guessing.
- * The audit outlives the lease itself, which GENERATION_ENDED clears.
+ * Counting matching starts, recording the sequence number at which the prompt
+ * was installed, and recording every interfering start afterwards lets the
+ * transaction reject all three instead of guessing. The audit outlives the
+ * lease itself, which GENERATION_ENDED clears.
  */
 let leaseAudit = null;
 
@@ -76,6 +96,7 @@ export function clearPrompt() {
  */
 export function armLease({ transactionId, prompt, chatId, kinds = ['normal'] }) {
     const kindSet = new Set(kinds);
+    openGenerations = generationActive ? 1 : 0;
     currentLease = { transactionId, prompt, chatId, kinds: kindSet, armedAt: Date.now() };
     leaseAudit = {
         transactionId,
@@ -84,13 +105,17 @@ export function armLease({ transactionId, prompt, chatId, kinds = ['normal'] }) 
         matchingStarts: 0,
         applied: false,
         appliedSequence: null,
+        interferingStarts: [],
+        promptIntegrityLost: false,
         closed: false,
     };
 }
 
 /**
  * What became of this transaction's lease.
- * @returns {{ applied: boolean, matchingStarts: number, appliedSequence: number|null } | null}
+ * @returns {{ applied: boolean, matchingStarts: number, appliedSequence: number|null,
+ *   interferingStarts: Array<{ sequence: number, kind: string, chatMatches: boolean }>,
+ *   promptIntegrityLost: boolean } | null}
  */
 export function getLeaseReceipt(transactionId) {
     if (leaseAudit?.transactionId !== transactionId) return null;
@@ -98,6 +123,8 @@ export function getLeaseReceipt(transactionId) {
         applied: leaseAudit.applied,
         matchingStarts: leaseAudit.matchingStarts,
         appliedSequence: leaseAudit.appliedSequence,
+        interferingStarts: [...leaseAudit.interferingStarts],
+        promptIntegrityLost: leaseAudit.promptIntegrityLost,
     };
 }
 
@@ -153,15 +180,31 @@ async function onGenerationStarted(type, _params, dryRun) {
     const ctx = getCtx();
 
     generationStartSequence += 1;
+    openGenerations += 1;
 
-    // Count every start that could plausibly be the one the transaction is
-    // waiting for, whether or not the lease is still armed — the generation
-    // that stole it has already cleared `currentLease` by the time the real one
-    // begins, which is precisely the case this is here to catch.
-    if (leaseAudit && !leaseAudit.closed
-        && getCurrentChatId(ctx) === leaseAudit.chatId
-        && leaseAudit.kinds.has(kind)) {
-        leaseAudit.matchingStarts += 1;
+    // Classify every start while the audit is open, whether or not the lease is
+    // still armed — the generation that stole it has already cleared
+    // `currentLease` by the time the real one begins, which is precisely the
+    // case this is here to catch.
+    if (leaseAudit && !leaseAudit.closed) {
+        const auditChatMatches = getCurrentChatId(ctx) === leaseAudit.chatId;
+        if (auditChatMatches && leaseAudit.kinds.has(kind)) {
+            leaseAudit.matchingStarts += 1;
+        } else {
+            // Anything else reaches disarmLease() below and clears the prompt.
+            // Before the instruction was installed that is merely a lease
+            // theft, caught by `applied` staying false. After it, the
+            // instruction is pulled out from under a generation that has not
+            // assembled its prompt yet, and nothing else would reveal it.
+            leaseAudit.interferingStarts.push({
+                sequence: generationStartSequence,
+                kind,
+                chatMatches: auditChatMatches,
+            });
+            if (leaseAudit.applied && generationStartSequence > leaseAudit.appliedSequence) {
+                leaseAudit.promptIntegrityLost = true;
+            }
+        }
     }
 
     if (currentLease) {
@@ -172,6 +215,10 @@ async function onGenerationStarted(type, _params, dryRun) {
             if (leaseAudit?.transactionId === currentLease.transactionId && !leaseAudit.closed) {
                 leaseAudit.applied = true;
                 leaseAudit.appliedSequence = generationStartSequence;
+                // Ours should be the only generation open at this moment. Another
+                // one still running will clear the prompt when it ends, before
+                // ours has assembled it.
+                if (openGenerations > 1) leaseAudit.promptIntegrityLost = true;
             }
         } else {
             // A different generation arrived first — the lease must not touch it.
@@ -194,6 +241,7 @@ async function onGenerationStarted(type, _params, dryRun) {
 
 function onGenerationEnded() {
     generationActive = false;
+    openGenerations = Math.max(0, openGenerations - 1);
     if (currentLease) currentLease = null;
     clearPrompt();
 }
@@ -216,6 +264,7 @@ export function initLease() {
     if (eventTypes.CHAT_CHANGED) {
         eventSource.on(eventTypes.CHAT_CHANGED, () => {
             generationActive = false;
+            openGenerations = 0;
             disarmLease();
         });
     }

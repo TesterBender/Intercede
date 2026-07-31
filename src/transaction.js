@@ -587,6 +587,20 @@ export class IntercedeTransaction {
         }
         if (proofError) throw proofError;
 
+        // The instruction was installed for this generation and then removed
+        // again before SillyTavern assembled the prompt, because a generation
+        // Intercede did not start began in between. `applied` is true and says
+        // nothing about it. The reply is ours and provably so — hence a plain
+        // error and a clean selective rollback rather than recovery-required.
+        if (receipt.promptIntegrityLost) {
+            // An already-running generation leaves no interfering start to name.
+            const kinds = [...new Set(receipt.interferingStarts.map(start => start.kind))];
+            const detail = kinds.length ? ` (${kinds.join(', ')})` : ' that was already running';
+            throw new Error(
+                `Another generation${detail} overlapped this intercession and removed the rewrite instruction before it could be used, so the continuation was written without it. Nothing was committed.`,
+            );
+        }
+
         // Exactly one matching generation ran and it is ours, but the rewrite
         // instruction never reached it — the reply is an ordinary continuation
         // that would otherwise commit silently. Ownership *is* proven here, so
