@@ -182,6 +182,9 @@ describe('unrelated normal generation consumes the lease first', () => {
             const real = assistantMessage('Continuation.');
             ctx.chat.push(real);
             await ctx.eventSource.emit(ctx.eventTypes.MESSAGE_RECEIVED, ctx.chat.indexOf(real), 'normal');
+            // One end per start: the settle wait counts them.
+            // @see docs/RATIONALE.md#LEASE-04, #TX-17
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, 'normal');
             await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, 'normal');
         });
 
@@ -297,6 +300,41 @@ describe('non-matching generation interleaves after the instruction is installed
 
             // The foreign generation finishes during ours and clears the prompt.
             await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, 'quiet');
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, 'normal');
+        });
+
+        await expect(runTransaction(transaction, { ctx, offset: CUT_OFFSET }))
+            .rejects.toThrow(/overlap/i);
+
+        expect(ctx.chat).toHaveLength(2);
+        expect(ctx.chat[1].mes).toBe(ORIGINAL);
+        expect(ctx.chat.some(m => getIntercedeMarker(m))).toBe(false);
+        expect(transaction.isRecoveryRequired()).toBe(false);
+    });
+
+    // Two foreign generations overlap and one of them ends. Anything that
+    // tracks "is a generation running" as a boolean now reads false while the
+    // other is still open — and a count rebuilt from that boolean loses the
+    // second one entirely. @see docs/RATIONALE.md#LEASE-04
+    it('detects a foreign generation left open after another ends', async () => {
+        const { ctx, transaction } = await setup();
+
+        ctx.eventSource.on(ctx.eventTypes.USER_MESSAGE_RENDERED, async () => {
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, 'quiet', {}, false);
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, 'impersonate', {}, false);
+            // One finishes. The other is still running.
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, 'quiet');
+        });
+
+        ctx.generate = vi.fn(async () => {
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, 'normal', {}, false);
+
+            const real = assistantMessage('Continuation produced after prompt loss.');
+            ctx.chat.push(real);
+            await ctx.eventSource.emit(ctx.eventTypes.MESSAGE_RECEIVED, ctx.chat.indexOf(real), 'normal');
+
+            // The survivor ends during ours and clears the instruction.
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, 'impersonate');
             await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, 'normal');
         });
 

@@ -96,7 +96,9 @@ Interceding mutates canonical history, so every operation runs as a transaction:
   Intercede keeps it out of other requests, any generation that overlaps the one it was
   installed for — nested inside the start event, or already running — silently strips it.
   Intercede detects both and rolls its own continuation back rather than committing a reply
-  the instruction never reached.
+  the instruction never reached. Overlap is tracked by counting generations rather than by
+  a running/not-running flag, which cannot represent two at once and reads as idle the
+  moment either one ends.
 - **Validation** — after generation the three messages are verified against captured
   ownership (identity, markers, roles, prefix integrity, non-empty continuation), and
   verified *again* after `intercede_before_commit` in case a listener changed history.

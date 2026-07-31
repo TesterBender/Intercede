@@ -13,12 +13,14 @@ import { vaultGet, vaultGetCached } from './vault.js';
 
 /** @type {{ transactionId: string, prompt: string, chatId: string, kinds: Set<string>, armedAt: number } | null} */
 let currentLease = null;
-let generationActive = false;
 let stoppedFlag = false;
 let initialized = false;
 /** Monotonic generation-start counter. @see docs/RATIONALE.md#LEASE-03 */
 let generationStartSequence = 0;
-/** Generations begun but not yet ended. @see docs/RATIONALE.md#LEASE-04 */
+/**
+ * Generations begun but not yet ended — the sole record of what is running.
+ * @see docs/RATIONALE.md#LEASE-04
+ */
 let openGenerations = 0;
 
 /**
@@ -57,12 +59,13 @@ export function clearPrompt() {
  */
 export function armLease({ transactionId, prompt, chatId, kinds = ['normal'] }) {
     const kindSet = new Set(kinds);
-    openGenerations = generationActive ? 1 : 0;
     currentLease = { transactionId, prompt, chatId, kinds: kindSet, armedAt: Date.now() };
     leaseAudit = {
         transactionId,
         chatId,
         kinds: kindSet,
+        // @see docs/RATIONALE.md#LEASE-04 — recorded, never reset
+        baselineOpenGenerations: openGenerations,
         matchingStarts: 0,
         applied: false,
         appliedSequence: null,
@@ -76,7 +79,7 @@ export function armLease({ transactionId, prompt, chatId, kinds = ['normal'] }) 
  * What became of this transaction's lease.
  * @returns {{ applied: boolean, matchingStarts: number, appliedSequence: number|null,
  *   interferingStarts: Array<{ sequence: number, kind: string, chatMatches: boolean }>,
- *   promptIntegrityLost: boolean } | null}
+ *   promptIntegrityLost: boolean, baselineOpenGenerations: number } | null}
  */
 export function getLeaseReceipt(transactionId) {
     if (leaseAudit?.transactionId !== transactionId) return null;
@@ -86,6 +89,7 @@ export function getLeaseReceipt(transactionId) {
         appliedSequence: leaseAudit.appliedSequence,
         interferingStarts: [...leaseAudit.interferingStarts],
         promptIntegrityLost: leaseAudit.promptIntegrityLost,
+        baselineOpenGenerations: leaseAudit.baselineOpenGenerations,
     };
 }
 
@@ -103,8 +107,9 @@ export function isLeaseArmed() {
     return currentLease !== null;
 }
 
+/** @see docs/RATIONALE.md#LEASE-04 — the count, not a boolean, answers this */
 export function isGenerationActive() {
-    return generationActive;
+    return openGenerations > 0;
 }
 
 /** True when GENERATION_STOPPED fired since the flag was last reset. */
@@ -131,7 +136,6 @@ function getTipSuffixRecord(ctx) {
 
 async function onGenerationStarted(type, _params, dryRun) {
     if (dryRun) return; // @see docs/RATIONALE.md#LEASE-08 (deliberate exemption)
-    generationActive = true;
     stoppedFlag = false;
 
     const kind = normalizeType(type);
@@ -186,15 +190,16 @@ async function onGenerationStarted(type, _params, dryRun) {
 }
 
 function onGenerationEnded() {
-    generationActive = false;
     openGenerations = Math.max(0, openGenerations - 1);
     if (currentLease) currentLease = null;
     clearPrompt();
 }
 
+/** @see docs/RATIONALE.md#LEASE-09 — a stop does not decrement; its end does */
 function onGenerationStopped() {
     stoppedFlag = true;
-    onGenerationEnded();
+    if (currentLease) currentLease = null;
+    clearPrompt();
 }
 
 export function initLease() {
@@ -208,8 +213,8 @@ export function initLease() {
     if (eventTypes.GENERATION_ENDED) eventSource.on(eventTypes.GENERATION_ENDED, onGenerationEnded);
     if (eventTypes.GENERATION_STOPPED) eventSource.on(eventTypes.GENERATION_STOPPED, onGenerationStopped);
     if (eventTypes.CHAT_CHANGED) {
+        // @see docs/RATIONALE.md#LEASE-09 — the one place the count is reset
         eventSource.on(eventTypes.CHAT_CHANGED, () => {
-            generationActive = false;
             openGenerations = 0;
             disarmLease();
         });
