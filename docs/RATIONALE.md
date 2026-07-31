@@ -280,6 +280,30 @@ The canonical messages are left exactly as they are; only the ability to restore
 pre-intercession original is discarded. This is the sanctioned way to reclaim vault
 space, and the only thing that lets age-based cleanup touch a committed record.
 
+Because it is the one operation that destroys evidence on purpose, it refuses whenever
+something else might still need that evidence: a transaction in progress, the
+recovery-required latch ([TX-11](#TX-11)), a journal in a non-terminal stage, or a
+metadata record that has gone missing. A journal mid-flight is the sharpest of these —
+the snapshot it names may be the only copy of the original text of a message the chat
+currently shows half-applied.
+
+The three steps run in an order chosen by asking what each intermediate failure leaves
+behind:
+
+1. **Mark the snapshot `finalizedAt`.** Not the last step, the first. Cleanup protects a
+   committed record that is *not* finalized ([VAULT-02](#VAULT-02)), so a snapshot
+   orphaned by a failed step 3 would otherwise be protected forever — a permanent leak
+   that no sweep can reach.
+2. **Persist the decision** (`finalizedAt` set, `vaultKey` deleted) while the snapshot
+   still exists. If this fails, the snapshot is intact and undo still works; the only
+   trace is a finalized flag on a record still referenced, which the next attempt
+   overwrites.
+3. **Delete the snapshot.** Only now is it expendable. If this fails, undo is already
+   correctly advertised as gone and the record is collectable by age.
+
+The invariant across all three: never leave undo *gone while still advertised*. Every
+ordering that deletes before recording would.
+
 <a id="TX-15"></a>
 ### TX-15 — Offer undo only when it can be delivered
 **Sites:** `src/transaction.js` › `canUndoTip()`; `src/ui/message-button.js` › `verifyUndoAvailability()`
@@ -723,13 +747,26 @@ A backend that resolves without persisting is caught by reading the value back.
 
 <a id="VAULT-02"></a>
 ### VAULT-02 — Age alone never removes a live snapshot
-**Sites:** `src/vault.js` › `cleanupVault()`
+**Sites:** `src/vault.js` › `cleanupVault()`; `src/transaction.js` › `cleanupSnapshots()`, `liveVaultKeys()`
 **Guards:** INV-10 **Related:** [TX-14](#TX-14), [TX-15](#TX-15), [REC-03](#REC-03), [CFG-01](#CFG-01)
 
 A committed record that has not been explicitly finalized is the only copy of the message
 Undo restores. An `abandoned` record holds the only copy of the original text of a
 message the chat still shows half-applied. Neither may be removed by age alone; use
 [TX-14](#TX-14) to give up undo deliberately.
+
+Those two checks read the record's own `state`, which is the limit of what a record can
+answer: it says what the snapshot was *for*, never whether anything still *points at it*.
+The in-flight transaction, the recovery journal, and the chat's own metadata all live
+outside the vault, and the vault cannot import them without a cycle. So the references are
+passed in as `protectedKeys`, composed on the transaction side by `liveVaultKeys()` — the
+active transaction's key, a non-terminal journal's key, and every metadata record without
+a `finalizedAt`.
+
+`cleanupSnapshots()` is therefore the only entry point any caller should use; calling
+`cleanupVault()` directly means cleaning up with the references missing. It also refuses
+outright while a transaction is in progress, because the snapshot being written is the one
+thing a sweep must not race.
 
 <a id="VAULT-03"></a>
 ### VAULT-03 — Best-effort vs strict writes
@@ -949,21 +986,72 @@ code, Markdown links/images, raw HTML tags, macro expressions, or an unfinished
 quotation. An unclosed trailing fence protects to end of text.
 
 <a id="SEG-03"></a>
-### SEG-03 — Separator regex treats a single newline as a paragraph break
-**Sites:** `src/segmentation.js` › `SEPARATOR_REGEX`
-**Status:** ⚠ **Known defect — deferred, not fixed**
+### SEG-03 — A paragraph break is a blank line
+**Sites:** `src/segmentation.js` › `PARAGRAPH_SEPARATOR_REGEX`, `getBlocks()`
+**Related:** [SEG-04](#SEG-04), [SEG-05](#SEG-05)
 
 ```js
-const SEPARATOR_REGEX = /\n[^\S\n]*(?:\n[^\S\n]*)*/g;
+const PARAGRAPH_SEPARATOR_REGEX = /\n[^\S\n]*(?:\n[^\S\n]*)+/g;
 ```
 
-The trailing `*` makes the second newline optional, so a single newline is treated as a
-paragraph boundary and `getBlocks` degrades into a line-splitter. That in turn defeats
-`insideOpenQuote`'s multi-line quote detection, since a quote spanning lines is split
-across blocks.
+The trailing `+` is load-bearing. With `*` in its place — which is what shipped through
+v0.5 — a single newline counted as a paragraph break, and two things followed:
 
-Deferred to a later phase by an explicit scoping decision. Recorded here so it is not
-mistaken for intended behaviour.
+- `getBlocks()` degraded into a line-splitter, which defeated `insideOpenQuote()`. A
+  quotation spanning two lines was split across blocks, so neither half saw an odd
+  number of quote marks and a cut was offered *inside* the quote.
+- Paragraph granularity stopped meaning anything: on a message written with single
+  newlines it offered a boundary at every line, which is sentence-ish behaviour under
+  the wrong label.
+
+A single newline is now a line break within a paragraph. It still yields a *sentence*
+boundary wherever a sentence actually ends there — `Intl.Segmenter` breaks after a line
+feed — so the useful cut points survive; they are simply labelled honestly.
+
+The cost is real and accepted: a message written entirely with single newlines has no
+paragraph boundaries at all, and in paragraph granularity offers nothing. Sentence
+granularity, the default, still finds the same places. Restoring the old behaviour to
+avoid that empty case would restore the mis-cut quotation with it.
+
+<a id="SEG-07"></a>
+### SEG-07 — Paired emphasis is protected
+**Sites:** `src/segmentation.js` › `EMPHASIS_PATTERNS`, `WITHIN_BLOCK`
+**Related:** [SEG-02](#SEG-02)
+
+`**strong**`, `__strong__`, `*emphasis*`, `_emphasis_`, and `~~strike~~` become protected
+ranges. A cut between the delimiters puts the opener in the prefix and the closer in
+text that is about to be regenerated, so the prefix renders with an unclosed `*` and the
+stray delimiter is what the model sees first.
+
+This matters most for the way roleplay is actually written. In `*She walks in.*` the
+sentence segmenter reports a break after `.` and *before* the closing `*`, because `*`
+is not closing punctuation under UAX #29. That candidate is now rejected, and the
+candidate after the closing delimiter is kept — the same cut, one character later, in
+the right place.
+
+Each pattern requires a non-space character just inside both delimiters, which is what
+CommonMark requires for the pair to render as emphasis at all: text these patterns miss
+was never emphasis. `WITHIN_BLOCK` forbids a blank line inside a match, so an unclosed
+delimiter cannot pair with one three paragraphs away and protect everything between.
+
+Over-matching only ever forbids a cut, so the failure direction is a boundary the user
+does not get. Under-matching hands them a broken one.
+
+<a id="SEG-08"></a>
+### SEG-08 — A list is one unit
+**Sites:** `src/segmentation.js` › `addListRanges()`, `LIST_ITEM_REGEX`, `LIST_CONTINUATION_REGEX`
+**Related:** [SEG-02](#SEG-02)
+
+A run of bullet or ordered items — with indented continuation lines, and with the blank
+lines of a loose list — is protected as a single range. Cutting between two items leaves
+a truncated list in the prefix and asks the regeneration to resume a numbering it was
+never shown.
+
+Cuts *at* the range's edges stay legal, because `isOffsetProtected()` compares strictly:
+before the list and after it are both fine. Only the inside is refused.
+
+A message that is mostly a list therefore offers few boundaries, or none. That is the
+same trade already made for fenced code, and the same message says so.
 
 <a id="SEG-04"></a>
 ### SEG-04 — Sentence heuristics
@@ -1180,6 +1268,27 @@ Paragraph markers are appended to their host block, so dimming starts at the hos
 sentence markers dim from their own position. Using one rule for both either leaves the
 paragraph's own text undimmed or dims a sentence's preceding text.
 
+<a id="UI-12"></a>
+### UI-12 — One controller, two presentations
+**Sites:** `src/ui/selection.js`; `src/ui/overlay.js`, `src/ui/inline-mode.js`
+**Related:** [UI-01](#UI-01), [UI-03](#UI-03), [UI-04](#UI-04), [ANC-01](#ANC-01)
+
+The two selection interfaces differ in exactly two things: where the markers are drawn,
+and how the remainder is dimmed. Everything either side of that — resolving which message
+is eligible, reading its raw source, computing boundaries, refusing a message with none,
+building the composer, saving the draft, committing what the composer holds — was
+duplicated line for line, and had already started to drift: a guard added to one mode was
+not present in the other.
+
+Duplication here is not a tidiness problem, it is a correctness one. A boundary rule, a
+draft key, or an eligibility check that exists twice is a rule that can be *true in one
+mode and false in the other*, and the user has no way to tell which mode they are in when
+it matters. `resolveSelectionTarget()`, `buildComposer()`, `saveDraftFromState()`, and
+`commitFromState()` hold the single copy; each mode supplies only its own rendering.
+
+The split is drawn at the presentation seam rather than at a convenient line count: if a
+change is invisible to the user, it belongs in `selection.js`.
+
 ---
 
 # Errors and configuration — `ERR-*`, `CFG-*`
@@ -1212,7 +1321,36 @@ Custom events are emitted through the shared SillyTavern eventSource so memory, 
 timeline, and analytics extensions can invalidate derived state after a history rewrite.
 Handler errors are caught and logged — a misbehaving listener must not fail a commit.
 
-> `intercede_invalidated` is declared and documented but never emitted. Deferred.
+`intercede_invalidated` is the umbrella signal, emitted *in addition to* — and immediately
+after — each of the four specific outcomes (`committed`, `rolled_back`, `undone`, and the
+rollback inside snapshot recovery). A listener that only needs to know "history moved" can
+subscribe to this one event instead of tracking all four, and a fifth outcome added later
+still reaches it.
+
+Its payload carries `fromIndex` alongside `affectedMessageIds`, because an intercession
+inserts and removes messages: every index at or after `fromIndex` may have *shifted
+position*, not merely changed text. A consumer that invalidates only the listed ids will
+keep stale state for everything below them. `fromIndex` is `null` when no message ids
+could be determined — treat that as "invalidate everything", not as "nothing changed".
+
+<a id="CFG-03"></a>
+### CFG-03 — The switch stops new intercessions, not recovery
+**Sites:** `src/ui/open.js` › `openIntercede()`; `src/ui/message-button.js` › `refreshButtonVisibility()`
+**Related:** [TX-14](#TX-14), [TX-15](#TX-15), [REC-01](#REC-01)
+
+`settings.enabled` is enforced in `openIntercede()`, which every entry point funnels
+through — the wand item, Alt+I, the per-message button, and bare `/intercede`. One gate,
+because four gates are four chances for one of them to be missed; that is precisely how
+the setting came to be decorative in the first place.
+
+It deliberately does **not** gate `/intercede undo`, `compare`, `recover`, `finalize`, or
+recovery-on-chat-change. Switching an extension off is a statement about what it should do
+next, not consent to strand a committed intercession with no way back. If turning Intercede
+off also removed undo, the user's own snapshot would become unreachable by the very action
+that was supposed to make the extension harmless.
+
+The wand entry is added once at init, so visibility has to be refreshed when the setting
+changes rather than decided at construction. The per-message button follows the same call.
 
 ---
 
