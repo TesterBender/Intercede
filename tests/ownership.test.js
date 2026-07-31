@@ -131,16 +131,21 @@ describe('chained intercession', () => {
 });
 
 describe('lease application', () => {
-    it('fails instead of committing when the rewrite instruction never reached the generation', async () => {
+    // A non-matching generation disarms the lease, so the transaction's own
+    // generation runs uninstructed. Exactly one matching generation still ran,
+    // and it is ours — so the reply is provably owned and rollback can remove
+    // it cleanly rather than leaving the chat for the user to sort out.
+    it('rolls back cleanly when the instruction never reached its own generation', async () => {
         const { ctx, transaction } = await setup();
 
-        // An unrelated generation arrives first and consumes the lease slot, so
-        // Intercede's own generation runs with no instruction installed.
         ctx.generate = vi.fn(async () => {
             await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, 'quiet', {}, false);
-            ctx.chat.push(assistantMessage('Uninstructed continuation.'));
-            await ctx.eventSource.emit(ctx.eventTypes.MESSAGE_RECEIVED, ctx.chat.length - 1);
             await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, 'quiet');
+
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, 'normal', {}, false);
+            ctx.chat.push(assistantMessage('Uninstructed continuation.'));
+            await ctx.eventSource.emit(ctx.eventTypes.MESSAGE_RECEIVED, ctx.chat.length - 1, 'normal');
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, 'normal');
         });
 
         await expect(runTransaction(transaction, { ctx, offset: CUT_OFFSET }))
@@ -148,6 +153,7 @@ describe('lease application', () => {
 
         expect(ctx.chat).toHaveLength(2);
         expect(ctx.chat[1].mes).toBe(ORIGINAL);
+        expect(transaction.isRecoveryRequired()).toBe(false);
     });
 
     it('installs the instruction exactly once for a matching generation', async () => {

@@ -133,6 +133,73 @@ describe('journal recovery', () => {
         expect(vault.readJournal()).toBeNull();
     });
 
+    it('clears pending markers when the user keeps the chat as it is', async () => {
+        const harness = await setup();
+        const { ctx, transaction } = harness;
+        const { transactionId } = await simulateCrashAfterInsertion(harness);
+        confirmMock.mockResolvedValue(false);
+
+        await transaction.checkRecovery();
+
+        const stillMarked = ctx.chat.filter(
+            m => m.extra?.intercede?.transactionId === transactionId,
+        );
+        expect(stillMarked).toHaveLength(0);
+    });
+
+    it('records the abandoned transaction and keeps its snapshot', async () => {
+        const harness = await setup();
+        const { ctx, transaction, vault } = harness;
+        const { transactionId, vaultKey } = await simulateCrashAfterInsertion(harness);
+        confirmMock.mockResolvedValue(false);
+
+        await transaction.checkRecovery();
+
+        const record = ctx.chatMetadata.intercede.transactions[transactionId];
+        expect(record.state).toBe('abandoned');
+        expect(record.vaultKey).toBe(vaultKey);
+
+        // The chat still shows a half-applied message, so the snapshot is the
+        // only copy of the original text and must survive.
+        const snapshot = await vault.vaultGet(vaultKey);
+        expect(snapshot?.completeOriginalMessage?.mes).toBe(ORIGINAL);
+        expect(await vault.cleanupVault(1)).toBe(0);
+    });
+
+    it('restores the chain parent marker rather than stripping it', async () => {
+        const harness = await setup();
+        const { ctx, transaction } = harness;
+        const { transactionId } = await simulateCrashAfterInsertion(harness);
+        // The interrupted transaction had cut an earlier intercession's output.
+        ctx.chat[1].extra.intercede.parent = { transactionId: 'tx-earlier', role: 'suffix' };
+        confirmMock.mockResolvedValue(false);
+
+        await transaction.checkRecovery();
+
+        expect(ctx.chat[1].extra.intercede).toEqual({
+            transactionId: 'tx-earlier',
+            role: 'suffix',
+        });
+        expect(ctx.chat[1].extra.intercede.transactionId).not.toBe(transactionId);
+    });
+
+    it('stays in recovery when a marker cannot be accounted for', async () => {
+        const harness = await setup();
+        const { ctx, transaction, vault } = harness;
+        const { transactionId } = await simulateCrashAfterInsertion(harness);
+        // Something wrote an unrecognised role under this transaction's id.
+        ctx.chat.push(assistantMessage('Unknown role.', {
+            intercede: { transactionId, role: 'something-else' },
+        }));
+        confirmMock.mockResolvedValue(false);
+
+        await transaction.checkRecovery();
+
+        expect(transaction.isRecoveryRequired()).toBe(true);
+        expect(vault.readJournal()).not.toBeNull();
+        expect(ctx.chat.some(m => m.mes === 'Unknown role.')).toBe(true);
+    });
+
     it('discards a journal from a stage where nothing had been mutated', async () => {
         const { ctx, transaction, vault, constants } = await setup();
         const { hashText } = await import('../src/utils.js');
@@ -154,6 +221,30 @@ describe('journal recovery', () => {
         expect(ctx.chat[1].mes).toBe(ORIGINAL);
         // Nothing was mutated, so the user is never prompted.
         expect(confirmMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps the journal and blocks new work when the snapshot is missing', async () => {
+        const { ctx, transaction, vault, constants } = await setup();
+        const { hashText } = await import('../src/utils.js');
+
+        // A journal past the point of mutation whose snapshot is gone.
+        vault.writeJournalStrict({
+            transactionId: 'tx-orphan',
+            chatId: ctx.chatId,
+            stage: constants.JOURNAL_STAGE.USER_INSERTED,
+            vaultKey: `intercede:${ctx.chatId}:tx-orphan`,
+            targetIndex: 1,
+            expectedTargetHash: hashText(ORIGINAL),
+            originalChatLength: 2,
+            startedAt: Date.now(),
+        });
+        ctx.chat[1].mes = 'Prefix sentence.';
+
+        await transaction.checkRecovery();
+
+        expect(vault.readJournal()).not.toBeNull();
+        expect(vault.readJournal().stage).toBe('recovery-required');
+        expect(transaction.isRecoveryRequired()).toBe(true);
     });
 
     it('reports an unfinished intercession belonging to a different chat', async () => {

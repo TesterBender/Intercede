@@ -23,15 +23,32 @@ let generationActive = false;
 let stoppedFlag = false;
 let initialized = false;
 /**
- * The transaction whose instruction was last actually installed.
- *
- * Armed is not the same as applied: if a generation Intercede did not start
- * arrives first, the lease is disarmed and the transaction's own generation
- * then runs with no rewrite instruction at all. That produces an ordinary
- * continuation which looks perfectly valid, so nothing downstream would catch
- * it. The transaction asserts against this after generating.
+ * Monotonic count of generation starts, used to correlate a lease application
+ * with the specific `generate()` call the transaction made.
  */
-let lastAppliedTransactionId = null;
+let generationStartSequence = 0;
+
+/**
+ * Audit of what actually happened to one transaction's lease.
+ *
+ * Armed is not the same as applied, and applied is not the same as applied *to
+ * our generation*. Two distinct failures hide here:
+ *
+ *   - A generation Intercede did not start arrives first and consumes the
+ *     lease. Intercede's own generation then runs with no rewrite instruction
+ *     and produces an ordinary continuation that looks perfectly valid.
+ *   - Any second matching generation while the lease is open makes it
+ *     impossible to say which one carried the instruction.
+ *
+ * Counting matching starts and recording the sequence number at which the
+ * prompt was installed lets the transaction reject both instead of guessing.
+ * The audit outlives the lease itself, which GENERATION_ENDED clears.
+ */
+let leaseAudit = null;
+
+export function getGenerationStartSequence() {
+    return generationStartSequence;
+}
 
 function normalizeType(type) {
     return (type === undefined || type === null || type === '') ? 'normal' : String(type);
@@ -58,13 +75,35 @@ export function clearPrompt() {
  * @param {string[]} [options.kinds] generation types the lease may attach to
  */
 export function armLease({ transactionId, prompt, chatId, kinds = ['normal'] }) {
-    currentLease = { transactionId, prompt, chatId, kinds: new Set(kinds), armedAt: Date.now() };
-    if (lastAppliedTransactionId === transactionId) lastAppliedTransactionId = null;
+    const kindSet = new Set(kinds);
+    currentLease = { transactionId, prompt, chatId, kinds: kindSet, armedAt: Date.now() };
+    leaseAudit = {
+        transactionId,
+        chatId,
+        kinds: kindSet,
+        matchingStarts: 0,
+        applied: false,
+        appliedSequence: null,
+        closed: false,
+    };
 }
 
-/** Whether this transaction's instruction reached a generation (see above). */
-export function wasLeaseApplied(transactionId) {
-    return lastAppliedTransactionId === transactionId;
+/**
+ * What became of this transaction's lease.
+ * @returns {{ applied: boolean, matchingStarts: number, appliedSequence: number|null } | null}
+ */
+export function getLeaseReceipt(transactionId) {
+    if (leaseAudit?.transactionId !== transactionId) return null;
+    return {
+        applied: leaseAudit.applied,
+        matchingStarts: leaseAudit.matchingStarts,
+        appliedSequence: leaseAudit.appliedSequence,
+    };
+}
+
+/** Stop auditing; later generations belong to somebody else. */
+export function closeLeaseAudit(transactionId) {
+    if (leaseAudit?.transactionId === transactionId) leaseAudit.closed = true;
 }
 
 export function disarmLease() {
@@ -113,12 +152,27 @@ async function onGenerationStarted(type, _params, dryRun) {
     const kind = normalizeType(type);
     const ctx = getCtx();
 
+    generationStartSequence += 1;
+
+    // Count every start that could plausibly be the one the transaction is
+    // waiting for, whether or not the lease is still armed — the generation
+    // that stole it has already cleared `currentLease` by the time the real one
+    // begins, which is precisely the case this is here to catch.
+    if (leaseAudit && !leaseAudit.closed
+        && getCurrentChatId(ctx) === leaseAudit.chatId
+        && leaseAudit.kinds.has(kind)) {
+        leaseAudit.matchingStarts += 1;
+    }
+
     if (currentLease) {
         const fresh = Date.now() - currentLease.armedAt < LEASE_TTL_MS;
         const chatMatches = getCurrentChatId(ctx) === currentLease.chatId;
         if (fresh && chatMatches && currentLease.kinds.has(kind)) {
             setPrompt(currentLease.prompt);
-            lastAppliedTransactionId = currentLease.transactionId;
+            if (leaseAudit?.transactionId === currentLease.transactionId && !leaseAudit.closed) {
+                leaseAudit.applied = true;
+                leaseAudit.appliedSequence = generationStartSequence;
+            }
         } else {
             // A different generation arrived first — the lease must not touch it.
             disarmLease();

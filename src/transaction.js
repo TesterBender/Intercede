@@ -19,9 +19,26 @@ import {
 } from './constants.js';
 import { PreflightError, RecoveryRequiredError } from './errors.js';
 import { emitIntercedeEvent } from './events.js';
-import { beginAssistantCapture } from './generation-capture.js';
-import { armLease, disarmLease, isGenerationActive, resetStoppedFlag, wasGenerationStopped, wasLeaseApplied } from './lease.js';
-import { createOwnership, getIntercedeMarker, isOwnedMessage, markOwnedMessage, OWNED_ROLE } from './ownership.js';
+import { beginAssistantCapture, proveGeneratedSuffix } from './generation-capture.js';
+import {
+    armLease,
+    closeLeaseAudit,
+    disarmLease,
+    getGenerationStartSequence,
+    getLeaseReceipt,
+    isGenerationActive,
+    resetStoppedFlag,
+    wasGenerationStopped,
+} from './lease.js';
+import {
+    clearOwnedMarker,
+    createOwnership,
+    getIntercedeMarker,
+    hasKnownRole,
+    isOwnedMessage,
+    markOwnedMessage,
+    OWNED_ROLE,
+} from './ownership.js';
 import { buildRewritePrompt } from './prompt.js';
 import { splitAtOffset } from './segmentation.js';
 import {
@@ -47,6 +64,7 @@ import {
     vaultDeleteStrict,
     vaultGet,
     vaultKeyFor,
+    vaultPut,
     vaultPutStrict,
     vaultRecordExists,
     writeJournalStrict,
@@ -508,12 +526,11 @@ export class IntercedeTransaction {
         // Identify the continuation by the event that announces it, not by its
         // position afterwards: the tail may belong to another extension by the
         // time generation ends (INV-03).
-        const capture = beginAssistantCapture(ctx, {
-            transactionId: this.transactionId,
-            chatId: this.chatId,
-            expectedIndex: this.ownership.expectedSuffixIndex,
-        });
+        const capture = beginAssistantCapture(ctx, { chatId: this.chatId });
+        const sequenceBeforeCall = getGenerationStartSequence();
 
+        let candidates = [];
+        let generationError = null;
         try {
             const generation = ctx.generate();
             if (generation && typeof generation.then === 'function') {
@@ -521,23 +538,62 @@ export class IntercedeTransaction {
             }
             // Settle: some backends resolve slightly before the reply is appended.
             await waitUntil(() => !isGenerationActive(), 8000, 100);
-
-            const captured = capture.finish();
-            if (!captured.ok) throw new Error(captured.reason);
-
-            this.ownership.suffixIndex = captured.index;
-            this.ownership.suffixRef = captured.ref;
+        } catch (error) {
+            generationError = error;
         } finally {
-            capture.dispose();
+            candidates = capture.finish();
+            closeLeaseAudit(this.transactionId);
             disarmLease();
         }
 
-        // Armed is not applied. If an unrelated generation consumed the lease
-        // first, this one ran with no rewrite instruction and its output is an
-        // ordinary continuation that would otherwise be committed silently.
-        if (!wasLeaseApplied(this.transactionId)) {
+        // Can the reply be attributed to *this* call at all?
+        //
+        // Structural position is not enough when more than one matching
+        // generation ran: the single message that arrived at the expected index
+        // may well be the other one's. Attribution is therefore settled before
+        // anything is marked, so an unattributable message is never claimed and
+        // never deleted.
+        const receipt = getLeaseReceipt(this.transactionId);
+        const attributable = receipt?.matchingStarts === 1
+            && (receipt.appliedSequence === null || receipt.appliedSequence > sequenceBeforeCall);
+
+        this.ownership.suffixIndex = null;
+        this.ownership.suffixRef = null;
+        let proofError = null;
+
+        if (attributable) {
+            // Claim whenever ownership is provable — including when generation
+            // failed afterwards. A message this transaction created must be
+            // removable by its own rollback, or it is stranded in the chat.
+            try {
+                const proven = proveGeneratedSuffix({ candidates, chat: ctx.chat, ownership: this.ownership });
+                this.ownership.suffixIndex = proven.index;
+                this.ownership.suffixRef = proven.message;
+            } catch (error) {
+                proofError = error;
+            }
+        }
+
+        if (generationError) throw generationError;
+
+        if (!attributable) {
+            const detail = !receipt
+                ? 'the generation lease left no record'
+                : `${receipt.matchingStarts} matching generations ran while this intercession was waiting`;
+            throw new RecoveryRequiredError(
+                `The reply cannot be attributed to this intercession (${detail}), so nothing was claimed, changed further, or deleted.`,
+                { transactionId: this.transactionId },
+            );
+        }
+        if (proofError) throw proofError;
+
+        // Exactly one matching generation ran and it is ours, but the rewrite
+        // instruction never reached it — the reply is an ordinary continuation
+        // that would otherwise commit silently. Ownership *is* proven here, so
+        // a clean selective rollback is the right outcome.
+        if (!receipt.applied) {
             throw new Error(
-                'The rewrite instruction was never applied to this generation — another generation started first. Nothing was committed.',
+                'The rewrite instruction was never applied to this generation, so the continuation was written without it. Nothing was committed.',
             );
         }
 
@@ -988,16 +1044,19 @@ async function checkRecoveryInner() {
                 await restoreFromVaultRecord(ctx, journal, snapshot);
                 return;
             }
-        } else {
-            await showConfirm(
-                'An intercession needs your review',
-                `Intercede stopped without deleting anything${why} Its snapshot is no longer available, so please review the last few messages yourself.`,
-                { confirmLabel: 'Understood', cancelLabel: 'Leave it for now' },
-            );
+            if (!await abandonInterruptedTransaction(ctx, journal, snapshot)) {
+                notify('warning', 'Some messages still carry markers from the interrupted intercession, so it stays open for review.', { timeOut: 10000 });
+            }
+            return;
         }
 
-        clearJournal();
-        recoveryRequired = false;
+        // No snapshot: nothing can be restored, and clearing the journal here
+        // would erase the only record that a canonical mutation was interrupted.
+        notify(
+            'error',
+            `Intercede stopped without deleting anything${why} Its snapshot is missing, so the interruption is being kept on record. Please review the last few messages yourself.`,
+            { timeOut: 0 },
+        );
         return;
     }
 
@@ -1013,8 +1072,19 @@ async function checkRecoveryInner() {
 
     const vaultRecord = await vaultGet(journal.vaultKey);
     if (!vaultRecord?.completeOriginalMessage) {
-        notify('error', 'An unfinished intercession was found, but its snapshot is missing. Please review the last messages manually.');
-        clearJournal();
+        // The journal is the only durable evidence that canonical history was
+        // mid-change. Losing the snapshot makes automatic restoration
+        // impossible, not the interruption imaginary — so keep the record and
+        // stop, rather than declaring the transaction resolved (P0-04).
+        recoveryRequired = true;
+        try {
+            updateJournal({ stage: JOURNAL_STAGE.RECOVERY_REQUIRED, error: 'snapshot-missing' });
+        } catch { /* the notice below is the real signal */ }
+        notify(
+            'error',
+            'An unfinished intercession was found, but its recovery snapshot is missing. No history was changed automatically — please review the last few messages.',
+            { timeOut: 0 },
+        );
         return;
     }
 
@@ -1027,10 +1097,77 @@ async function checkRecoveryInner() {
         { confirmLabel: 'Restore original', cancelLabel: 'Keep chat as it is' },
     );
     if (!restore) {
-        clearJournal();
+        if (!await abandonInterruptedTransaction(ctx, journal, vaultRecord)) {
+            recoveryRequired = true;
+            notify('warning', 'Some messages still carry markers from the interrupted intercession, so it stays open for review.', { timeOut: 10000 });
+        }
         return;
     }
     await restoreFromVaultRecord(ctx, journal, vaultRecord);
+}
+
+/**
+ * Resolve an interrupted transaction by accepting the chat as it currently
+ * stands (P0-03).
+ *
+ * "Keep chat as it is" cannot mean "delete the journal and walk away": that
+ * leaves messages still marked as belonging to a transaction that never
+ * finished, and a vault snapshot nothing references. Worse, when the target is
+ * half-applied the snapshot holds the *only* copy of the original text, so
+ * discarding it destroys the very thing recovery exists to protect.
+ *
+ * So the markers are cleared, an `abandoned` record keeps the snapshot
+ * referenced and findable, and the snapshot itself is retained. If any marker
+ * cannot be accounted for, nothing is touched and the transaction stays in
+ * recovery-required.
+ *
+ * @returns {Promise<boolean>} false when the state could not be resolved safely
+ */
+async function abandonInterruptedTransaction(ctx, journal, vaultRecord) {
+    const transactionId = journal.transactionId;
+    const marked = ctx.chat.filter(
+        message => getIntercedeMarker(message)?.transactionId === transactionId,
+    );
+
+    if (!marked.every(message => hasKnownRole(message, transactionId))) {
+        return false;
+    }
+
+    for (const message of marked) {
+        clearOwnedMarker(message, transactionId);
+    }
+
+    const container = getMetaContainer(ctx);
+    if (container) {
+        container.transactions[transactionId] = {
+            version: 1,
+            state: 'abandoned',
+            abandonedAt: Date.now(),
+            targetMessageIndex: journal.targetIndex,
+            originalHash: journal.expectedTargetHash,
+            vaultKey: journal.vaultKey,
+            reason: 'The chat was kept as it stood when recovery ran.',
+        };
+    }
+
+    try {
+        await persistChatAndMetadata(ctx);
+    } catch (error) {
+        console.error('[Intercede] save while abandoning a transaction failed', error);
+        return false;
+    }
+
+    // Deliberately keeps the snapshot: it is still the only copy of the
+    // pre-intercession text, and cleanupVault protects abandoned records.
+    if (vaultRecord && journal.vaultKey) {
+        try {
+            await vaultPut(journal.vaultKey, { ...vaultRecord, state: 'abandoned', abandonedAt: Date.now() });
+        } catch { /* the metadata record already preserves the reference */ }
+    }
+
+    clearJournal();
+    recoveryRequired = false;
+    return true;
 }
 
 async function restoreFromVaultRecord(ctx, journal, vaultRecord) {

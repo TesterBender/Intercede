@@ -140,7 +140,11 @@ export async function cleanupVault(ttlDays) {
     for (const key of await vaultKeys()) {
         const record = await vaultGet(key);
         if (!record?.createdAt || record.createdAt >= cutoff) continue;
+        // A committed record backs an undo that is still offered; an abandoned
+        // one holds the only copy of the original text of a message the chat
+        // still shows half-applied. Neither may be removed by age alone.
         if (record.state === 'committed' && !record.finalizedAt) continue;
+        if (record.state === 'abandoned' && !record.finalizedAt) continue;
 
         await vaultDelete(key);
         removed++;

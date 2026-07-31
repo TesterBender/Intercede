@@ -60,6 +60,34 @@ export function markOwnedMessage(message, transactionId, role) {
     return message;
 }
 
+/** Roles a transaction is allowed to have written. */
+const KNOWN_ROLES = new Set(Object.values(OWNED_ROLE));
+
+export function hasKnownRole(message, transactionId) {
+    const marker = getIntercedeMarker(message);
+    return marker?.transactionId === transactionId && KNOWN_ROLES.has(marker.role);
+}
+
+/**
+ * Remove this transaction's marker, restoring the earlier link it displaced.
+ *
+ * Used when an interrupted transaction is abandoned rather than restored: the
+ * messages stay, but they must stop claiming to belong to a transaction that
+ * never completed. A chained message goes back to advertising its parent, so
+ * the intercession below it remains identifiable.
+ */
+export function clearOwnedMarker(message, transactionId) {
+    const marker = getIntercedeMarker(message);
+    if (marker?.transactionId !== transactionId) return false;
+
+    if (marker.parent?.transactionId) {
+        message.extra[METADATA_KEY] = { ...marker.parent };
+    } else {
+        delete message.extra[METADATA_KEY];
+    }
+    return true;
+}
+
 /**
  * The bookkeeping a transaction needs to prove what it created.
  *

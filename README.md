@@ -82,6 +82,15 @@ Interceding mutates canonical history, so every operation runs as a transaction:
   is tagged with the transaction's id. Nothing is rewritten or deleted on position alone.
   If another extension adds a message while Intercede is generating, the intercession fails
   and rolls back instead of adopting that message as its continuation.
+- **Observed is not owned** — the event handler only records which assistant messages
+  appeared; it writes nothing. A message is marked as Intercede's only after it has been
+  checked against the expected shape *and* the reply has been attributed to Intercede's own
+  generation call. A marker is never allowed to become its own evidence, so an extension
+  that emits the same event first is neither tagged nor deleted.
+- **Attributed generation** — the one-generation instruction is tracked to the specific
+  `generate()` call that consumed it. If an unrelated generation takes the instruction, or
+  more than one matching generation runs while Intercede is waiting, the reply cannot be
+  attributed and the intercession stops without claiming it.
 - **Validation** — after generation the three messages are verified against captured
   ownership (identity, markers, roles, prefix integrity, non-empty continuation), and
   verified *again* after `intercede_before_commit` in case a listener changed history.
@@ -94,7 +103,12 @@ Interceding mutates canonical history, so every operation runs as a transaction:
 - **Recovery journal** — a synchronous localStorage journal is written and read back around
   every risky step; if it cannot be verified, the intercession aborts before any message is
   changed. After a reload or crash, Intercede offers to restore the original message; it
-  never deletes a message it cannot prove belongs to the interrupted transaction.
+  never deletes a message it cannot prove belongs to the interrupted transaction. Choosing
+  to keep the chat as it stands clears the interrupted transaction's markers and records it
+  as abandoned, keeping its snapshot — declining a restore never quietly discards the only
+  copy of the original text. If the snapshot is missing entirely, the journal is kept rather
+  than cleared: automatic restoration being impossible does not make the interruption
+  imaginary.
 - **Undo that is really there** — the Undo and Compare buttons appear only once the
   snapshot behind them has been confirmed present, and automatic snapshot cleanup never
   deletes a snapshot that can still be undone. `/intercede finalize` discards one on
