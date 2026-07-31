@@ -1457,6 +1457,19 @@ Two constraints on how far this goes:
   consequential dialogs in the extension, to satisfy a convention. The composer was changed
   to match the modal instead; the modal was left alone.
 
+**The width correction has to be global.** SillyTavern styles `.menu_button` as
+`width: min-content`, which wraps a multi-word label one word per line — and inside
+`.mes_text` (`overflow-wrap: anywhere`) min-content is one *character*. The stylesheet
+already corrected this, but only under `.intercede-composer-controls`, where it was first
+noticed. Everything else inherited the bug: **Clean up now** rendered as three stacked
+lines in the settings drawer, and the finalize dialog's **Delete snapshot** / **Keep it**
+stacked for the same reason. A fix scoped to the surface where a bug was *observed*, rather
+than to the surface the cause spans, is not a fix — it is a delay.
+
+`tests/button-layout.test.js` parses the covered selector list out of `style.css` and
+asserts that every button the extension actually renders is matched by it, so a button
+added to a new container fails rather than quietly stacking.
+
 What this rule does *not* touch: whether an action confirms, what it deletes, or where it
 can be reached from. Those are behavioural questions, and the layout pass deliberately
 answered none of them — `snapshotTtlDays` still defaults to `0`, so **Clean up now** still

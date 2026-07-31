@@ -43,6 +43,21 @@
     }
 }
 
+/* ── Buttons ───────────────────────────────────────────────────────────────
+   ST's .menu_button is width: min-content, which wraps any multi-word label
+   one word per line — and inside .mes_text (overflow-wrap: anywhere) min-content
+   is one *character*, stacking the label letter by letter. This has to cover
+   every container that renders one, not just the composer where it was first
+   noticed: "Clean up now" stacked in the settings drawer and "Delete snapshot"
+   stacks in the finalize dialog for the same reason.
+   @see docs/RATIONALE.md#UI-13 */
+.intercede-settings .menu_button,
+.intercede-modal-buttons .menu_button,
+.intercede-composer-controls .menu_button {
+    width: auto;
+    white-space: nowrap;
+}
+
 /* ── Overlay / modal shells ────────────────────────────────────────────── */
 
 .intercede-backdrop {
@@ -303,12 +318,7 @@
     margin-left: auto;
 }
 
-/* ST's .menu_button is width: min-content; inside .mes_text (overflow-wrap:
-   anywhere) that computes one character wide, stacking the label vertically. */
-.intercede-composer-controls .menu_button {
-    width: auto;
-    white-space: nowrap;
-}
+/* Moved to the shared rule near the top — every Intercede button needs it. */
 
 .intercede-composer-hint {
     margin-top: 8px;
