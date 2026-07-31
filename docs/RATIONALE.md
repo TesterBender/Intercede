@@ -1424,6 +1424,58 @@ it matters. `resolveSelectionTarget()`, `buildComposer()`, `saveDraftFromState()
 The split is drawn at the presentation seam rather than at a convenient line count: if a
 change is invisible to the user, it belongs in `selection.js`.
 
+<a id="UI-13"></a>
+### UI-13 — Visual weight tracks consequence
+**Sites:** `src/ui/settings.js`, `src/ui/selection.js`, `src/ui/overlay.js`, `style.css`
+**Related:** [UI-07](#UI-07), [UI-12](#UI-12)
+
+Every action control had the same visual weight regardless of what it did. The settings
+drawer was a flat column of eight controls where snapshot retention sat flush against
+cosmetic toggles; a one-digit day count got a full-width field; the panel's only button
+floated in a wrapper styled solely with `margin-top: 4px`; the composer's rewrite-mode
+`select` (`flex: 1 1 180px`) out-massed the commit and cancel buttons beside it; and the
+overlay's icon-only dismiss carried `menu_button` chrome — reading exactly as loud as the
+primary **Intercede** button in the same panel.
+
+Weight is a claim about importance. When everything is equally loud, the claim is empty and
+the user has to read every label to find the one control that matters. Sections with
+headings, an action row anchored right above a rule, a field sized to its content, and a
+dismiss quieter than a commit each restate the same hierarchy the prose already implies.
+
+Two constraints on how far this goes:
+
+- **Reuse the tokens that exist.** The section headings take
+  `.intercede-compare-heading`'s treatment and the action row takes
+  `.intercede-modal-buttons`'; the marker rest opacities (four arbitrary values across the
+  two interfaces) collapse to `--ic-marker-rest` and `--ic-rule-rest`. A new visual idiom
+  per surface is how two interfaces drift apart — the same failure [UI-12](#UI-12)
+  describes for logic.
+- **Never buy consistency with a moved click target.** `showConfirm` renders
+  primary-then-secondary into a `flex-end` footer, so **Undo** sits left of **Keep** and
+  **Intercede** left of **Back** — the opposite of the usual primary-rightmost convention.
+  Reversing it would relocate the button under the user's cursor on the two most
+  consequential dialogs in the extension, to satisfy a convention. The composer was changed
+  to match the modal instead; the modal was left alone.
+
+**The width correction has to be global.** SillyTavern styles `.menu_button` as
+`width: min-content`, which wraps a multi-word label one word per line — and inside
+`.mes_text` (`overflow-wrap: anywhere`) min-content is one *character*. The stylesheet
+already corrected this, but only under `.intercede-composer-controls`, where it was first
+noticed. Everything else inherited the bug: **Clean up now** rendered as three stacked
+lines in the settings drawer, and the finalize dialog's **Delete snapshot** / **Keep it**
+stacked for the same reason. A fix scoped to the surface where a bug was *observed*, rather
+than to the surface the cause spans, is not a fix — it is a delay.
+
+`tests/button-layout.test.js` parses the covered selector list out of `style.css` and
+asserts that every button the extension actually renders is matched by it, so a button
+added to a new container fails rather than quietly stacking.
+
+What this rule does *not* touch: whether an action confirms, what it deletes, or where it
+can be reached from. Those are behavioural questions, and the layout pass deliberately
+answered none of them — `snapshotTtlDays` still defaults to `0`, so **Clean up now** still
+reports a count rather than deleting, and `finalize`, `recover`, and `diagnostics` are still
+slash-command-only.
+
 ---
 
 # Errors and configuration — `ERR-*`, `CFG-*`
