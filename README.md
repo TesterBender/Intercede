@@ -152,7 +152,7 @@ than merely changed text — invalidate from there, not just the listed ids. A `
 informational: listeners cannot veto a commit, and any history they change is detected by
 the re-validation above. A small console API is exposed at `window.Intercede`.
 
-## Limitations (v0.5)
+## Limitations (v0.6)
 
 - Latest completed assistant message only; one intercession runs at a time (chains are
   sequential — you intercede the finished continuation, not a generation in flight).

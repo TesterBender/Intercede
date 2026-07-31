@@ -11,6 +11,7 @@
 
 import { INTERCEDE_EVENTS } from './src/constants.js';
 import { getLeaseDiagnostics, initLease, isGenerationActive } from './src/lease.js';
+import { getBoundaries, getProtectedRanges } from './src/segmentation.js';
 import {
     checkCapabilities,
     getCtx,
@@ -28,7 +29,35 @@ import { initSettingsPanel } from './src/ui/settings.js';
 import { notify, waitUntil } from './src/utils.js';
 import { readJournal, vaultKeys } from './src/vault.js';
 
-const VERSION = '0.5.0';
+const VERSION = '0.6.0';
+
+/**
+ * What the *loaded* code actually does, probed rather than asserted.
+ *
+ * `manifest.json` has `auto_update: false` and a version string that a stale
+ * checkout reports just as confidently as a current one, so a runtime tester had
+ * no way to tell which build was answering. These run the real parser over
+ * fixtures whose behaviour changed, so `/intercede diagnostics` distinguishes
+ * builds by capability instead of by a number somebody forgot to bump.
+ * @see docs/RATIONALE.md#LEASE-11
+ */
+function probeParserBuild() {
+    const has = (text, kind) => getProtectedRanges(text).some(range => range.kind === kind);
+    try {
+        return {
+            referenceLinks: has('See [the map][map] here.', 'link'),
+            linkDefinitions: has('[map]: http://example.test/a', 'link-definition'),
+            // `\\*` is a literal backslash and a *live* delimiter (even parity).
+            backslashParity: has('a \\\\*emphasis* b', 'emphasis'),
+            intrawordEmphasis: has('foo*bar*baz', 'emphasis'),
+            listContinuation: getProtectedRanges('- one\n\n  cont. more\n- two')
+                .filter(range => range.kind === 'list').length === 1,
+            blankLineParagraphs: getBoundaries('One line.\nTwo lines.', 'paragraph').length === 0,
+        };
+    } catch (error) {
+        return { error: String(error?.message ?? error) };
+    }
+}
 
 async function handleSlashCommand(action) {
     switch (String(action ?? '').trim().toLowerCase()) {
@@ -92,6 +121,8 @@ function collectDiagnostics() {
     const lease = getLeaseDiagnostics();
     return {
         version: VERSION,
+        // @see docs/RATIONALE.md#LEASE-11 — capability, not a version string
+        parserBuild: probeParserBuild(),
         capabilities: checkCapabilities(),
         eligibility: {
             generationActive: isGenerationActive(),
@@ -192,6 +223,15 @@ async function init() {
             if (!dryRun) closeAllModes();
         });
     }
+    // The Undo/Compare controls depend on a metadata record that does not exist
+    // yet when the host's own events fire: GENERATION_ENDED and
+    // CHARACTER_MESSAGE_RENDERED both precede the commit, so the refresh they
+    // trigger sees no committed tip and hides the controls. Nothing refreshed
+    // afterwards, which is why the slash commands worked while the buttons were
+    // missing until some unrelated event happened along.
+    // @see docs/RATIONALE.md#UI-08
+    eventSource?.on(INTERCEDE_EVENTS.INVALIDATED, refreshButtonVisibilityDebounced);
+
     if (eventTypes.APP_READY) {
         eventSource?.on(eventTypes.APP_READY, async () => {
             refreshButtonVisibilityDebounced();

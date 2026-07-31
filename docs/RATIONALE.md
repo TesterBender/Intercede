@@ -692,6 +692,18 @@ The tallies are the discriminator. Dry runs climbing alongside a stuck open reco
 at [LEASE-08](#LEASE-08); unmatched ends point at a host emitting ends we never saw start;
 reconciliations climbing means the counter is leaking and the host is covering for it.
 
+`parserBuild` answers a different question: **which build is actually loaded?**
+`manifest.json` sets `auto_update: false`, and a version string is reported just as
+confidently by a stale checkout as by a current one — during P1 runtime testing three
+different parser generations all announced `0.5.0`, and several findings turned out to be
+an old checkout rather than live defects. So the field is not a claim, it is a
+measurement: `probeParserBuild()` runs the real parser over fixtures whose behaviour
+changed between builds and reports what it observes. A tester pasting diagnostics can see
+at a glance whether reference links, backslash parity, intraword emphasis, list
+continuations and blank-line paragraphs are present in the code that is answering.
+
+Bump the version too, of course. The probe is what survives forgetting to.
+
 ---
 
 # Validation — `VAL-*`
@@ -1302,6 +1314,15 @@ appear once it confirms — better a brief delay than a control that fails when 
 Buttons are injected into the message template so every future message carries them, and
 into already-rendered messages on init. Visibility is kept in sync with chat life-cycle
 events.
+
+Those events are not sufficient on their own, and the gap is easy to miss because the
+slash commands keep working while the controls are absent. `GENERATION_ENDED` and
+`CHARACTER_MESSAGE_RENDERED` both fire *before* the transaction commits, so the refresh
+they trigger runs while `getCommittedTipRecord()` still returns nothing — the controls
+stay hidden, and nothing refreshed afterwards until some unrelated event happened along.
+The refresh is therefore also driven by [`intercede_invalidated`](#CFG-02), which by
+construction fires *after* every canonical change. It is the one signal whose timing is
+tied to the commit rather than to the generation.
 
 <a id="UI-09"></a>
 ### UI-09 — Chain-aware wording

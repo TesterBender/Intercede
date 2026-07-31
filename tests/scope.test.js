@@ -145,6 +145,48 @@ describe('intercede_invalidated', () => {
     });
 });
 
+describe('the Undo/Compare controls', () => {
+    /**
+     * The controls are class-driven, and the class depends on a metadata record
+     * that does not exist yet while the host's own events are firing. Only the
+     * invalidation event lands after the commit, which is what this asserts.
+     * @see docs/RATIONALE.md#UI-08
+     */
+    it('appears on the tail after a commit, without any further host event', async () => {
+        vi.resetModules();
+        const { ctx } = installFakeSillyTavern({ chat: baseChat() });
+        document.body.innerHTML = `
+            <div id="chat">
+                <div class="mes" mesid="0"><div class="mes_buttons"><div class="extraMesButtons"></div></div></div>
+                <div class="mes" mesid="1"><div class="mes_buttons"><div class="extraMesButtons"></div></div></div>
+            </div>
+            <div id="extensionsMenu"></div>`;
+
+        const { initLease } = await import('../src/lease.js');
+        const transaction = await import('../src/transaction.js');
+        const { INTERCEDE_EVENTS } = await import('../src/constants.js');
+        const { initMessageButtons, refreshButtonVisibility } = await import('../src/ui/message-button.js');
+        initLease();
+        initMessageButtons();
+        ctx.eventSource.on(INTERCEDE_EVENTS.INVALIDATED, refreshButtonVisibility);
+
+        ctx.generate = vi.fn(respondWith(ctx, 'Revised continuation.'));
+        // The fake host does not re-render, so mirror the two new messages.
+        const result = await runTransaction(transaction, { ctx, offset: CUT_OFFSET });
+        const chatNode = document.getElementById('chat');
+        for (const index of [2, 3]) {
+            chatNode.insertAdjacentHTML('beforeend',
+                `<div class="mes" mesid="${index}"><div class="mes_buttons"><div class="extraMesButtons"></div></div></div>`);
+        }
+        await ctx.eventSource.emit(INTERCEDE_EVENTS.INVALIDATED, { transactionId: result.transactionId });
+        await vi.waitFor(() => {
+            expect(document.querySelector('#chat .mes[mesid="3"]').classList.contains('intercede-committed')).toBe(true);
+        });
+
+        expect(await transaction.canUndoTip()).toBe(true);
+    });
+});
+
 describe('drafts', () => {
     // @see docs/RATIONALE.md#UI-05
     async function drafts() {
