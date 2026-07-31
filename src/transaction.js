@@ -16,6 +16,7 @@ import {
     JOURNAL_STAGE,
     METADATA_KEY,
     REWRITE_MODES,
+    TERMINAL_JOURNAL_STAGES,
     TX_STATE,
 } from './constants.js';
 import { PreflightError, RecoveryRequiredError } from './errors.js';
@@ -56,6 +57,7 @@ import { hashText, normalizeForComparison, notify, uuid, waitUntil } from './uti
 import { showConfirm } from './ui/modal.js';
 import { qualityWarnings, validateOwnedStructure } from './validator.js';
 import {
+    cleanupVault,
     clearJournal,
     clearJournalStrict,
     readJournal,
@@ -102,6 +104,27 @@ export function getMetaContainer(ctx = getCtx()) {
     }
     if (!meta[METADATA_KEY].transactions) meta[METADATA_KEY].transactions = {};
     return meta[METADATA_KEY];
+}
+
+/**
+ * Announce that derived state (summaries, vectors, timelines) computed from
+ * these messages no longer describes what is in the chat.
+ *
+ * Every operation that rewrites canonical history emits its own specific event
+ * *and* this one, so a listener that only cares "did the text under me change?"
+ * has a single subscription instead of four.
+ * @see docs/RATIONALE.md#CFG-02
+ */
+async function emitInvalidated({ transactionId, chatId, affectedMessageIds, operation }) {
+    const ids = (affectedMessageIds ?? []).filter(id => Number.isInteger(id));
+    await emitIntercedeEvent(INTERCEDE_EVENTS.INVALIDATED, {
+        transactionId,
+        chatId,
+        affectedMessageIds: ids,
+        // Everything from here on may have shifted position, not just changed text.
+        fromIndex: ids.length ? Math.min(...ids) : null,
+        operation,
+    });
 }
 
 /** The Intercede marker a message carries, or null. */
@@ -689,6 +712,7 @@ export class IntercedeTransaction {
         this.state = TX_STATE.COMMITTED;
 
         await emitIntercedeEvent(INTERCEDE_EVENTS.COMMITTED, eventPayload);
+        await emitInvalidated(eventPayload);
     }
 
     /**
@@ -765,13 +789,15 @@ export class IntercedeTransaction {
             if (this.vaultKey) await vaultDelete(this.vaultKey);
             this.state = TX_STATE.ROLLED_BACK;
 
-            await emitIntercedeEvent(INTERCEDE_EVENTS.ROLLED_BACK, {
+            const rollbackPayload = {
                 transactionId: this.transactionId,
                 chatId: this.chatId,
                 originalMessageIndex: this.targetIndex,
                 affectedMessageIds: [this.targetIndex],
                 operation: 'rollback',
-            });
+            };
+            await emitIntercedeEvent(INTERCEDE_EVENTS.ROLLED_BACK, rollbackPayload);
+            await emitInvalidated(rollbackPayload);
         } finally {
             this._rollingBack = false;
         }
@@ -829,13 +855,65 @@ export async function canUndoTip(ctx = getCtx()) {
 }
 
 /**
+ * Vault keys something still points at, so age alone must not reap them.
+ *
+ * A record's own `state` cannot answer this: an in-flight snapshot has no state
+ * yet, and a committed one written by an earlier version may have none either.
+ * @see docs/RATIONALE.md#VAULT-02
+ * @returns {Set<string>}
+ */
+export function liveVaultKeys(ctx = getCtx()) {
+    const keys = new Set();
+
+    if (activeTransaction?.vaultKey) keys.add(activeTransaction.vaultKey);
+
+    const journal = readJournal();
+    if (journal?.vaultKey && !TERMINAL_JOURNAL_STAGES.includes(journal.stage)) {
+        keys.add(journal.vaultKey);
+    }
+
+    for (const record of Object.values(readTransactions(ctx) ?? {})) {
+        if (record?.vaultKey && !record.finalizedAt) keys.add(record.vaultKey);
+    }
+
+    return keys;
+}
+
+/**
+ * Age-based snapshot cleanup that knows what the extension is currently doing.
+ * @see docs/RATIONALE.md#VAULT-02
+ * @returns {Promise<{ ok: boolean, removed: number, reason?: string }>}
+ */
+export async function cleanupSnapshots(ttlDays, ctx = getCtx()) {
+    if (activeTransaction) {
+        return { ok: false, removed: 0, reason: 'An intercession is in progress.' };
+    }
+    return { ok: true, removed: await cleanupVault(ttlDays, liveVaultKeys(ctx)) };
+}
+
+/**
  * Give up undo for the committed intercession at the tail, irreversibly.
+ *
+ * The step order is the whole safety argument: each failure point must leave
+ * undo either still working or correctly reported as gone, never gone while
+ * still advertised.
  * @see docs/RATIONALE.md#TX-14
  */
 export async function finalizeIntercession() {
     const ctx = getCtx();
     if (!ctx) return { ok: false, reason: 'SillyTavern context unavailable.' };
     if (activeTransaction) return { ok: false, reason: 'An intercession is in progress.' };
+    if (recoveryRequired) {
+        return { ok: false, reason: 'An interrupted intercession still needs review — run /intercede recover first.' };
+    }
+
+    const journal = readJournal();
+    if (journal && !TERMINAL_JOURNAL_STAGES.includes(journal.stage)) {
+        return {
+            ok: false,
+            reason: `An unfinished intercession (${journal.stage}) is still journaled, and deleting a snapshot now could remove the only copy of the original. Recover it first.`,
+        };
+    }
 
     const record = getCommittedTipRecord(ctx);
     if (!record) {
@@ -845,20 +923,34 @@ export async function finalizeIntercession() {
         return { ok: false, reason: 'This intercession has already been finalized.' };
     }
 
+    const container = getMetaContainer(ctx);
+    const stored = container?.transactions?.[record.transactionId];
+    if (!stored) {
+        return { ok: false, reason: 'The transaction record disappeared before it could be finalized.' };
+    }
+
+    const finalizedAt = Date.now();
+
+    // 1. Mark the snapshot finalized first. Cleanup protects committed records
+    //    that are not finalized, so an unreferenced record would otherwise be
+    //    kept forever if step 3 never ran.
+    if (record.vaultKey) {
+        const snapshot = await vaultGet(record.vaultKey);
+        if (snapshot) await vaultPutStrict(record.vaultKey, { ...snapshot, finalizedAt });
+    }
+
+    // 2. Record the decision durably, while the snapshot still exists.
+    stored.finalizedAt = finalizedAt;
+    delete stored.vaultKey;
+    await persistChatAndMetadata(ctx);
+
+    // 3. Only now is the snapshot expendable.
     if (record.vaultKey) {
         await vaultDeleteStrict(record.vaultKey);
     }
 
-    const container = getMetaContainer(ctx);
-    const stored = container?.transactions?.[record.transactionId];
-    if (stored) {
-        stored.finalizedAt = Date.now();
-        delete stored.vaultKey;
-    }
-    await persistChatAndMetadata(ctx);
-
     notify('success', 'Intercession finalized — the undo snapshot was deleted. The messages are unchanged.');
-    return { ok: true };
+    return { ok: true, transactionId: record.transactionId };
 }
 
 /**
@@ -907,13 +999,15 @@ export async function undoIntercession() {
 
     await vaultDelete(record.vaultKey);
 
-    await emitIntercedeEvent(INTERCEDE_EVENTS.UNDONE, {
+    const undonePayload = {
         transactionId: record.transactionId,
         chatId: getCurrentChatId(ctx),
         originalMessageIndex: prefixIndex,
         affectedMessageIds: [prefixIndex, prefixIndex + 1, prefixIndex + 2],
         operation: 'undo',
-    });
+    };
+    await emitIntercedeEvent(INTERCEDE_EVENTS.UNDONE, undonePayload);
+    await emitInvalidated(undonePayload);
     notify('success', record.chainDepth
         ? 'Intercession undone — the continuation it was cut from is back, and can be undone in turn.'
         : 'Intercession undone — the original message was restored.');
@@ -1139,12 +1233,14 @@ async function restoreFromVaultRecord(ctx, journal, vaultRecord) {
     recoveryRequired = false;
     await vaultDelete(journal.vaultKey);
 
-    await emitIntercedeEvent(INTERCEDE_EVENTS.ROLLED_BACK, {
+    const recoveryPayload = {
         transactionId: journal.transactionId,
         chatId: journal.chatId,
         originalMessageIndex: targetIndex,
         affectedMessageIds: [targetIndex],
         operation: 'recovery',
-    });
+    };
+    await emitIntercedeEvent(INTERCEDE_EVENTS.ROLLED_BACK, recoveryPayload);
+    await emitInvalidated(recoveryPayload);
     notify('success', 'Original message restored from the recovery snapshot.');
 }

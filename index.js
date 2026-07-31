@@ -19,14 +19,14 @@ import {
     getEventTypes,
     getSettings,
 } from './src/stcontext.js';
-import { checkRecovery, finalizeIntercession, undoIntercession } from './src/transaction.js';
+import { checkRecovery, cleanupSnapshots, finalizeIntercession, undoIntercession } from './src/transaction.js';
 import { showCompare } from './src/ui/compare.js';
 import { initMessageButtons, refreshButtonVisibilityDebounced } from './src/ui/message-button.js';
 import { showConfirm } from './src/ui/modal.js';
 import { closeAllModes, openIntercede } from './src/ui/open.js';
 import { initSettingsPanel } from './src/ui/settings.js';
 import { notify, waitUntil } from './src/utils.js';
-import { cleanupVault, readJournal, vaultKeys } from './src/vault.js';
+import { readJournal, vaultKeys } from './src/vault.js';
 
 const VERSION = '0.5.0';
 
@@ -66,10 +66,14 @@ async function handleSlashCommand(action) {
         }
         case 'cleanup': {
             const days = getSettings().snapshotTtlDays;
-            const removed = days > 0 ? await cleanupVault(days) : 0;
+            const result = await cleanupSnapshots(days);
+            if (!result.ok) {
+                notify('warning', result.reason);
+                return '';
+            }
             const remaining = (await vaultKeys()).length;
             notify('info', days > 0
-                ? `Removed ${removed} snapshot(s) older than ${days} day(s); ${remaining} remain.`
+                ? `Removed ${result.removed} snapshot(s) older than ${days} day(s); ${remaining} remain.`
                 : `Snapshot age limit is 0 (keep forever); ${remaining} snapshot(s) stored.`);
             return '';
         }
@@ -197,7 +201,7 @@ async function init() {
 
     // A chat may already be open by the time the extension loads.
     await checkRecovery();
-    cleanupVault(getSettings().snapshotTtlDays).catch(() => { /* best-effort */ });
+    cleanupSnapshots(getSettings().snapshotTtlDays).catch(() => { /* best-effort */ });
 
     // Tiny public surface for other extensions and the console (§17.5).
     globalThis.Intercede = Object.freeze({

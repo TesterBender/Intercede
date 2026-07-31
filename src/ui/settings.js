@@ -4,8 +4,9 @@
 
 import { REWRITE_MODES } from '../constants.js';
 import { getCtx, getSettings, saveSettings } from '../stcontext.js';
+import { cleanupSnapshots } from '../transaction.js';
 import { notify } from '../utils.js';
-import { cleanupVault, vaultKeys } from '../vault.js';
+import { vaultKeys } from '../vault.js';
 import { refreshButtonVisibility } from './message-button.js';
 
 const PANEL_HTML = `
@@ -118,10 +119,14 @@ export function initSettingsPanel() {
     byId('intercede_cleanup_now').addEventListener('click', async () => {
         const ctx = getCtx();
         const days = getSettings(ctx).snapshotTtlDays;
-        const removed = days > 0 ? await cleanupVault(days) : 0;
+        const result = await cleanupSnapshots(days, ctx);
+        if (!result.ok) {
+            notify('warning', result.reason);
+            return;
+        }
         const remaining = (await vaultKeys()).length;
         notify('info', days > 0
-            ? `Removed ${removed} snapshot(s) older than ${days} day(s); ${remaining} remain.`
+            ? `Removed ${result.removed} snapshot(s) older than ${days} day(s); ${remaining} remain.`
             : `Snapshot age limit is 0 (keep forever); ${remaining} snapshot(s) stored.`);
     });
 }
