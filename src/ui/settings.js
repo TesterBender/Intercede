@@ -1,9 +1,6 @@
 /**
  * Settings drawer (§23), rendered into the Extensions panel.
- *
- * The markup is bound afterwards by element id, so wrapper elements may be
- * rearranged for layout but no `id` may move.
- * @see docs/RATIONALE.md#UI-13 why the controls are sectioned and the button framed
+ * @see docs/RATIONALE.md#UI-13 the sectioning, and why no `id` here may move
  */
 
 import { REWRITE_MODES } from '../constants.js';

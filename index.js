@@ -33,13 +33,7 @@ const VERSION = '0.6.0';
 
 /**
  * What the *loaded* code actually does, probed rather than asserted.
- *
- * `manifest.json` has `auto_update: false` and a version string that a stale
- * checkout reports just as confidently as a current one, so a runtime tester had
- * no way to tell which build was answering. These run the real parser over
- * fixtures whose behaviour changed, so `/intercede diagnostics` distinguishes
- * builds by capability instead of by a number somebody forgot to bump.
- * @see docs/RATIONALE.md#LEASE-11
+ * @see docs/RATIONALE.md#LEASE-11 why a version string cannot answer this
  */
 function probeParserBuild() {
     const has = (text, kind) => getProtectedRanges(text).some(range => range.kind === kind);
@@ -223,12 +217,7 @@ async function init() {
             if (!dryRun) closeAllModes();
         });
     }
-    // The Undo/Compare controls depend on a metadata record that does not exist
-    // yet when the host's own events fire: GENERATION_ENDED and
-    // CHARACTER_MESSAGE_RENDERED both precede the commit, so the refresh they
-    // trigger sees no committed tip and hides the controls. Nothing refreshed
-    // afterwards, which is why the slash commands worked while the buttons were
-    // missing until some unrelated event happened along.
+    // The one signal timed to the commit rather than to the generation.
     // @see docs/RATIONALE.md#UI-08
     eventSource?.on(INTERCEDE_EVENTS.INVALIDATED, refreshButtonVisibilityDebounced);
 

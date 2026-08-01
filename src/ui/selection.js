@@ -1,12 +1,6 @@
 /**
  * Plumbing shared by both selection interfaces.
- *
- * The two modes genuinely differ in only two things: where the markers are
- * drawn, and how the remainder is dimmed. Everything from "which message, and
- * where may it be cut" to "commit whatever the composer holds" is identical,
- * and lives here so it cannot drift apart.
- *
- * @see docs/RATIONALE.md#UI-12 one controller, two presentations
+ * @see docs/RATIONALE.md#UI-12 one controller, two presentations — and where the seam is drawn
  */
 
 import { REWRITE_MODES, REWRITE_MODE_LABELS } from '../constants.js';
@@ -127,9 +121,8 @@ export function buildComposer({ state, draft, variant, onCommit, onCancel }) {
     cancelButton.type = 'button';
     cancelButton.addEventListener('click', onCancel);
 
-    // The mode select is a setting; these two are the actions. Keeping them in
-    // their own group lets the row anchor them right, away from the select,
-    // in the same order the confirmation dialog uses.
+    // The select is a setting; these two are the actions, grouped so the row can
+    // anchor them right in the confirmation dialog's order.
     // @see docs/RATIONALE.md#UI-13
     const actions = el('div', 'intercede-composer-actions');
     actions.append(commitButton, cancelButton);

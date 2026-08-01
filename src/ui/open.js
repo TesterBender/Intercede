@@ -20,8 +20,7 @@ export function openIntercede(index = undefined) {
         return;
     }
     const settings = getSettings();
-    // @see docs/RATIONALE.md#CFG-03 — the switch stops new intercessions here,
-    // and only here, so undo and recovery keep working for existing ones.
+    // @see docs/RATIONALE.md#CFG-03 — the one gate, and what it deliberately leaves open
     if (!settings.enabled) {
         notify('info', 'Intercede is switched off — enable it in the extension settings to respond inside a message.');
         return;

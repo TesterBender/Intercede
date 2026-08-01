@@ -31,8 +31,7 @@ export function refreshButtonVisibility() {
     document.querySelectorAll('#chat .mes.intercede-eligible').forEach(node => node.classList.remove('intercede-eligible'));
     document.querySelectorAll('#chat .mes.intercede-committed').forEach(node => node.classList.remove('intercede-committed'));
 
-    // @see docs/RATIONALE.md#CFG-03 — the wand entry is added once at init, so
-    // the switch has to be reflected here rather than at construction.
+    // @see docs/RATIONALE.md#CFG-03 — why the wand entry is refreshed, not gated at construction
     const wandItem = document.getElementById('intercede_wand_item');
     if (wandItem) wandItem.style.display = settings.enabled ? '' : 'none';
 

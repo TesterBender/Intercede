@@ -14,28 +14,18 @@ import { BOUNDARY_TYPES } from './constants.js';
  */
 
 /**
- * One character that cannot start a blank line. Markdown emphasis never spans a
- * paragraph break, so this keeps an unclosed delimiter from swallowing the rest
- * of the message.
+ * One character that cannot start a blank line, so no match spans a paragraph
+ * break. @see docs/RATIONALE.md#SEG-07
  */
 const WITHIN_BLOCK = String.raw`(?:(?!\n[^\S\n]*\n)[\s\S])`;
 
-/**
- * A backslash-escaped character. Consumed as one unit so a `\*` inside a span
- * neither closes it nor stops the scan, and never opens one either.
- */
+/** A backslash-escaped character, consumed as one unit. @see docs/RATIONALE.md#SEG-07 */
 const ESCAPED = String.raw`\\[^\n]`;
 
 /**
  * Zero-width assertion: this position is not preceded by an *odd* run of
  * backslashes, i.e. the delimiter starting here is not escaped.
- *
- * Parity is the whole point. `\*` is a literal asterisk, but `\\*` is a literal
- * backslash followed by a live delimiter, and `\\\*` is escaped again. A plain
- * `(?<!\\)` sees only the nearest backslash, so it reads every even run as an
- * escape and silently drops real emphasis — under-protection, which is the
- * direction that hands the user a broken cut.
- * @see docs/RATIONALE.md#SEG-07
+ * @see docs/RATIONALE.md#SEG-07 why parity, and not `(?<!\\)`
  */
 const NOT_ESCAPED = String.raw`(?<!(?<!\\)(?:\\\\)*\\)`;
 
@@ -43,19 +33,13 @@ const NOT_ESCAPED = String.raw`(?<!(?<!\\)(?:\\\\)*\\)`;
 const spanBody = (delim) => String.raw`(?:${ESCAPED}|(?!${delim})${WITHIN_BLOCK})+?`;
 
 /**
- * Paired Markdown emphasis. Each pattern requires a non-space character just
- * inside both delimiters, which is what makes the pair render as emphasis at
- * all — so text these miss was not emphasis to begin with.
- *
- * `*` may open inside a word (CommonMark allows `foo*bar*baz`); `_` may not,
- * which is what keeps snake_case out.
- * @see docs/RATIONALE.md#SEG-07
+ * Paired Markdown emphasis.
+ * @see docs/RATIONALE.md#SEG-07 the three CommonMark rules these encode, and why
  */
 const EMPHASIS_PATTERNS = [
     // ~~strikethrough~~
     String.raw`${NOT_ESCAPED}~~(?!\s)${spanBody('~~')}(?<!\s)${NOT_ESCAPED}~~`,
-    // ***bold italic*** first: the `**` pattern alone would stop one delimiter
-    // short and leave a cut legal between the second and third asterisk.
+    // ***bold italic***, matched before `**`. @see docs/RATIONALE.md#SEG-07
     String.raw`(?<!\*)${NOT_ESCAPED}\*\*\*(?!\s)${spanBody(String.raw`\*\*\*`)}(?<!\s)${NOT_ESCAPED}\*\*\*`,
     // **strong** and __strong__
     String.raw`(?<!\*)${NOT_ESCAPED}\*\*(?!\s)${spanBody(String.raw`\*\*`)}(?<!\s)${NOT_ESCAPED}\*\*`,
@@ -75,10 +59,7 @@ const resumesList = (line) => LIST_ITEM_REGEX.test(line) || LIST_CONTINUATION_RE
 
 /**
  * Protect each run of list items as one unit.
- *
- * A cut between two items would leave a truncated list in the prefix and hand
- * the rest to a regeneration that has no reason to continue the numbering.
- * @see docs/RATIONALE.md#SEG-08
+ * @see docs/RATIONALE.md#SEG-08 what a cut between two items costs, and where the run ends
  */
 function addListRanges(text, ranges) {
     const lines = text.split('\n');
@@ -106,8 +87,8 @@ function addListRanges(text, ranges) {
         } else if (LIST_CONTINUATION_REGEX.test(line)) {
             end = lineStarts[i] + line.length;
         } else if (!line.trim() && resumesList(lines[i + 1] ?? '')) {
-            // A loose list keeps the blank line inside the run — whether what
-            // follows is the next item or an indented continuation of this one.
+            // A loose list keeps the blank line inside the run.
+            // @see docs/RATIONALE.md#SEG-08
         } else {
             flush();
         }
@@ -206,10 +187,8 @@ const ABBREVIATION_REGEX = /(?:\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|Lt|Sgt|Capt|Col|G
 
 /**
  * Characters a sentence must not begin with: continuation punctuation and
- * *closing* quotes. Opening quotes are deliberately absent — dialogue is where
- * roleplay wants to cut, so `He shrugged. "It's fine."` offers the boundary
- * before the quotation instead of suppressing it.
- * @see docs/RATIONALE.md#SEG-10
+ * *closing* quotes.
+ * @see docs/RATIONALE.md#SEG-10 why opening quotes are deliberately absent
  */
 const BAD_SENTENCE_START_REGEX = /^[”’)\]}»,.;:!?…—–-]|^[a-z]/;
 
@@ -271,9 +250,8 @@ export function getBoundaries(text, granularity = 'sentence') {
     if (granularity === 'sentence') {
         for (const block of getBlocks(text)) {
             const blockText = text.slice(block.start, block.end);
-            // One range must swallow the whole block. Testing the two ends
-            // separately would skip a block whose ends sit in *different*
-            // ranges — two adjacent emphasis spans with a free cut between them.
+            // One range must swallow the whole block, not one range per end.
+            // @see docs/RATIONALE.md#SEG-02
             if (ranges.some(range => range.start <= block.start && range.end >= block.end)) {
                 continue;
             }
@@ -287,8 +265,8 @@ export function getBoundaries(text, granularity = 'sentence') {
                 if (ABBREVIATION_REGEX.test(trimmed)) continue;
                 const nextText = blockText.slice(relStart).replace(/^\s+/, '');
                 if (!nextText || BAD_SENTENCE_START_REGEX.test(nextText)) continue;
-                // A cut inside dialogue is offered, not suppressed — the risk is
-                // reported at confirmation instead. @see docs/RATIONALE.md#SEG-10
+                // A cut inside dialogue is offered, not suppressed.
+                // @see docs/RATIONALE.md#SEG-10
                 boundaries.push({ offset, type: BOUNDARY_TYPES.SENTENCE });
             }
         }
@@ -319,14 +297,10 @@ export function getBoundaries(text, granularity = 'sentence') {
 }
 
 /**
- * What a cut here leaves dangling in the preserved prefix.
+ * What a cut here leaves dangling in the preserved prefix. Only the final block
+ * is assessed.
  *
- * The parser offers dialogue boundaries rather than hiding them, so this is the
- * other half of that bargain: the user is told what they are about to do
- * instead of being prevented from doing it. Only the prefix's final block
- * matters — anything before a blank line is closed as far as rendering cares.
- *
- * @see docs/RATIONALE.md#SEG-10
+ * @see docs/RATIONALE.md#SEG-10 the other half of offering dialogue boundaries
  * @param {string} prefix the preserved text, as `splitAtOffset()` returns it
  * @returns {string[]} human-readable descriptions, empty when the cut is clean
  */

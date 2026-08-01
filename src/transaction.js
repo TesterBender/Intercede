@@ -109,11 +109,7 @@ export function getMetaContainer(ctx = getCtx()) {
 /**
  * Announce that derived state (summaries, vectors, timelines) computed from
  * these messages no longer describes what is in the chat.
- *
- * Every operation that rewrites canonical history emits its own specific event
- * *and* this one, so a listener that only cares "did the text under me change?"
- * has a single subscription instead of four.
- * @see docs/RATIONALE.md#CFG-02
+ * @see docs/RATIONALE.md#CFG-02 the umbrella signal, and what its payload carries
  */
 async function emitInvalidated({ transactionId, chatId, affectedMessageIds, operation }) {
     const ids = (affectedMessageIds ?? []).filter(id => Number.isInteger(id));
@@ -121,7 +117,7 @@ async function emitInvalidated({ transactionId, chatId, affectedMessageIds, oper
         transactionId,
         chatId,
         affectedMessageIds: ids,
-        // Everything from here on may have shifted position, not just changed text.
+        // @see docs/RATIONALE.md#CFG-02 — position, not merely text, may have moved
         fromIndex: ids.length ? Math.min(...ids) : null,
         operation,
     });
@@ -856,10 +852,7 @@ export async function canUndoTip(ctx = getCtx()) {
 
 /**
  * Vault keys something still points at, so age alone must not reap them.
- *
- * A record's own `state` cannot answer this: an in-flight snapshot has no state
- * yet, and a committed one written by an earlier version may have none either.
- * @see docs/RATIONALE.md#VAULT-02
+ * @see docs/RATIONALE.md#VAULT-02 why the vault cannot answer this for itself
  * @returns {Set<string>}
  */
 export function liveVaultKeys(ctx = getCtx()) {
@@ -889,8 +882,7 @@ export async function cleanupSnapshots(ttlDays, ctx = getCtx()) {
         return { ok: false, removed: 0, reason: 'An intercession is in progress.' };
     }
     if (recoveryRequired) {
-        // The latch means something is unresolved that the journal and metadata
-        // may no longer describe. Sweeping now could take the evidence with it.
+        // @see docs/RATIONALE.md#VAULT-02, #TX-11 — the sweep would take the evidence
         return {
             ok: false,
             removed: 0,
@@ -902,11 +894,7 @@ export async function cleanupSnapshots(ttlDays, ctx = getCtx()) {
 
 /**
  * Give up undo for the committed intercession at the tail, irreversibly.
- *
- * The step order is the whole safety argument: each failure point must leave
- * undo either still working or correctly reported as gone, never gone while
- * still advertised.
- * @see docs/RATIONALE.md#TX-14
+ * @see docs/RATIONALE.md#TX-14 the refusals, and why the three steps run in this order
  */
 export async function finalizeIntercession() {
     const ctx = getCtx();
@@ -940,19 +928,14 @@ export async function finalizeIntercession() {
 
     const finalizedAt = Date.now();
 
-    // 1. Mark the snapshot finalized first. Cleanup protects committed records
-    //    that are not finalized, so an unreferenced record would otherwise be
-    //    kept forever if step 3 never ran.
+    // 1. Mark the snapshot finalized. @see docs/RATIONALE.md#TX-14
     if (record.vaultKey) {
         const snapshot = await vaultGet(record.vaultKey);
         if (snapshot) await vaultPutStrict(record.vaultKey, { ...snapshot, finalizedAt });
     }
 
-    // 2. Record the decision durably, while the snapshot still exists.
-    //    The in-memory record is what canUndoTip() reads, so a failed save must
-    //    put it back: otherwise this session advertises no undo while the
-    //    snapshot it needs is still sitting in the vault, and only a reload
-    //    (which re-reads the unchanged metadata from disk) would recover it.
+    // 2. Persist the decision while the snapshot still exists — and restore the
+    //    in-memory record if the save throws. @see docs/RATIONALE.md#TX-14
     const before = structuredClone(stored);
     stored.finalizedAt = finalizedAt;
     delete stored.vaultKey;
