@@ -95,8 +95,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
     showButton: true,
     warnExtensions: true,
     /**
-     * Include the bounded lifecycle event log in `/intercede diagnostics`.
-     * Metadata only — never prompt or chat text. @see docs/RATIONALE.md#LEASE-14
+     * Include the always-collected lifecycle event log in `/intercede diagnostics`.
+     * Exposure, not collection. @see docs/RATIONALE.md#LEASE-14
      */
     debugLifecycle: false,
 });

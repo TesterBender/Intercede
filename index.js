@@ -139,8 +139,10 @@ function collectDiagnostics() {
             openGenerations: lease.openCount,
         },
         lease,
-        // @see docs/RATIONALE.md#LEASE-14 — metadata only, never prompt or chat text
-        lifecycleLog: getSettings().debugLifecycle ? getLifecycleLog() : 'disabled',
+        // Exposure only; collection is unconditional. @see docs/RATIONALE.md#LEASE-14
+        lifecycleLog: getSettings().debugLifecycle
+            ? getLifecycleLog()
+            : 'not included — Intercede.setDebugLifecycle(true), or read it now with Intercede.lifecycleLog()',
         journal: readJournal(),
         chat: {
             id: getCurrentChatId(ctx),
@@ -275,7 +277,7 @@ async function init() {
         // @see docs/RATIONALE.md#LEASE-14 — diagnostic only, no safety state
         lifecycleLog: getLifecycleLog,
         resetDiagnostics: resetLeaseTallies,
-        /** Include the lifecycle log in diagnostics. Metadata only; off by default. */
+        /** Include the lifecycle log in `diagnostics()`. @see docs/RATIONALE.md#LEASE-14 */
         setDebugLifecycle: (on = true) => {
             getSettings().debugLifecycle = Boolean(on);
             saveSettings();

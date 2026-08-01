@@ -315,6 +315,18 @@ export class IntercedeTransaction {
         this._rollingBack = false;
         /** Canonical state actually changed. @see docs/RATIONALE.md#TX-02 */
         this._mutated = false;
+        /** A terminal path already told the user what happened. @see docs/RATIONALE.md#ERR-02 */
+        this._userNotified = false;
+    }
+
+    /** Enough id to correlate console lines. Never shown in a toast. */
+    get shortId() {
+        return String(this.transactionId).slice(0, 8);
+    }
+
+    /** The caller must not add a second notice. @see docs/RATIONALE.md#ERR-02 */
+    get userWasNotified() {
+        return this._userNotified;
     }
 
     /**
@@ -547,6 +559,12 @@ export class IntercedeTransaction {
                 this.ownership.suffixRef = proven.message;
             } catch (error) {
                 proofError = error;
+                // @see docs/RATIONALE.md#CAP-07
+                console.warn(
+                    `[Intercede] ${this.shortId} could not prove a continuation:`,
+                    String(error?.message ?? error),
+                    capture.evidence(),
+                );
             }
         }
 
@@ -620,6 +638,8 @@ export class IntercedeTransaction {
             warnings: [...structure.warnings, ...quality.warnings],
             preservation: quality.preservation,
         };
+        // The label, never the prose. @see docs/RATIONALE.md#VAL-05
+        if (quality.meta) console.info(`[Intercede] ${this.shortId} quality note: meta-commentary/${quality.meta}`);
         return { ok: true, fatal: [], warnings: this.result.warnings };
     }
 
@@ -722,7 +742,7 @@ export class IntercedeTransaction {
             || this.state === TX_STATE.RECOVERY_REQUIRED) return;
         this._rollingBack = true;
         this.state = TX_STATE.ROLLING_BACK;
-        console.warn('[Intercede] rolling back:', reason);
+        console.warn(`[Intercede] ${this.shortId} rolling back:`, reason);
 
         const ctx = getCtx();
         try {
@@ -740,7 +760,8 @@ export class IntercedeTransaction {
             }
 
             if (!ctx || getCurrentChatId(ctx) !== this.chatId) {
-                // @see docs/RATIONALE.md#TX-10
+                // @see docs/RATIONALE.md#TX-10, #ERR-02
+                this._userNotified = true;
                 notify('warning', 'The chat changed during an intercession. Reopen that chat to restore the original message.', { timeOut: 10000 });
                 return;
             }
@@ -812,12 +833,15 @@ export class IntercedeTransaction {
             updateJournal({ stage: JOURNAL_STAGE.RECOVERY_REQUIRED, error: detail });
         } catch { /* the notice below is the real signal */ }
 
-        console.error('[Intercede] recovery required:', detail);
-        notify(
-            'error',
-            `Intercede stopped without changing anything further: ${detail} No messages were deleted. Run /intercede recover to review.`,
-            { timeOut: 0 },
-        );
+        // Offer recovery only when something is left to recover. @see docs/RATIONALE.md#ERR-02
+        const journalRemains = readJournal()?.transactionId === this.transactionId;
+        const tail = journalRemains
+            ? 'No messages were deleted and your response text was kept. Run /intercede recover to restore the original message.'
+            : 'No messages were deleted and your response text was kept.';
+
+        console.error(`[Intercede] ${this.shortId} recovery required:`, detail);
+        this._userNotified = true;
+        notify('error', `Intercede stopped without changing anything further: ${detail} ${tail}`, { timeOut: 0 });
     }
 }
 

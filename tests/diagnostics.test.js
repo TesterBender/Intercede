@@ -9,7 +9,13 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { emitHostSlashCommand, installFakeSillyTavern, uninstallFakeSillyTavern } from './helpers/fake-context.js';
+import {
+    emitHostGenerationEnded,
+    emitHostSlashCommand,
+    emitHostStart,
+    installFakeSillyTavern,
+    uninstallFakeSillyTavern,
+} from './helpers/fake-context.js';
 
 /** Boot the real entry point against the fake host. */
 async function bootExtension() {
@@ -96,10 +102,49 @@ describe('diagnostics reporting', () => {
         const { ctx } = await bootExtension();
         ctx.isGenerating = false;
 
-        expect(globalThis.Intercede.diagnostics().lifecycleLog).toBe('disabled');
+        expect(globalThis.Intercede.diagnostics().lifecycleLog).toMatch(/^not included/);
 
         ctx.extensionSettings.intercede.debugLifecycle = true;
         expect(Array.isArray(globalThis.Intercede.diagnostics().lifecycleLog)).toBe(true);
+    });
+
+    // The setting gates exposure, not collection: a buffer you must switch on
+    // before the bug is a buffer that is empty when it matters.
+    it('collects the lifecycle log even while the report hides it', async () => {
+        const { ctx } = await bootExtension();
+        ctx.isGenerating = false;
+
+        await emitHostStart(ctx);
+        await emitHostGenerationEnded(ctx);
+
+        expect(globalThis.Intercede.diagnostics().lifecycleLog).toMatch(/^not included/);
+        expect(globalThis.Intercede.lifecycleLog().length).toBeGreaterThan(0);
+    });
+
+    /**
+     * The report is meant to be pasted into a bug tracker, so it is the one
+     * place where a leak would be published rather than merely logged.
+     * @see docs/RATIONALE.md#LEASE-14
+     */
+    it('carries neither prompt nor roleplay text, log included', async () => {
+        const { ctx } = await bootExtension();
+        const lease = await import('../src/lease.js');
+
+        ctx.chat.push({ name: 'Them', is_user: false, is_system: false, mes: 'ROLEPLAY-CANARY in the chat.', extra: {} });
+        lease.armLease({
+            transactionId: 'tx-canary',
+            chatId: ctx.getCurrentChatId(),
+            prompt: 'PROMPT-CANARY — rewrite everything after this point.',
+            kinds: ['normal'],
+        });
+        await emitHostStart(ctx);
+        ctx.extensionSettings.intercede.debugLifecycle = true;
+
+        const report = JSON.stringify(globalThis.Intercede.diagnostics());
+
+        expect(report).not.toMatch(/PROMPT-CANARY/);
+        expect(report).not.toMatch(/ROLEPLAY-CANARY/);
+        lease.disarmLease();
     });
 
     it('resets counters without touching safety state', async () => {

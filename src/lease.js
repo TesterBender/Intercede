@@ -68,15 +68,18 @@ function isRecognizedGenerationKind(payload) {
 }
 
 /**
- * Classify a `GENERATION_STARTED` type argument.
+ * Classify a generation-type argument carried by a host event.
  *
  * `Generate(type)` leaves `type` undefined for an ordinary send, so an absent
  * value is `normal` *by the host's own contract* — that is `defaulted`, not a
  * guess. A recognized string is `named`. Anything else is `opaque`: it is not
  * called a kind, because nothing proves it is one.
+ *
+ * Exported because `MESSAGE_RECEIVED` carries the same argument.
  * @see docs/RATIONALE.md#LEASE-13
+ * @see docs/RATIONALE.md#CAP-06
  */
-function classifyStartKind(type) {
+export function classifyGenerationKind(type) {
     if (type === undefined || type === null || type === '') {
         return { kind: 'normal', source: 'defaulted' };
     }
@@ -383,7 +386,7 @@ async function onGenerationStarted(type, ...rest) {
     }
     stoppedFlag = false;
 
-    const { kind, source } = classifyStartKind(type);
+    const { kind, source } = classifyGenerationKind(type);
     const ctx = getCtx();
 
     generationStartSequence += 1;
@@ -465,7 +468,7 @@ async function onGenerationStarted(type, ...rest) {
 function onGenerationAfterCommands(type, ...rest) {
     if (isDryRunSignal(rest)) return;
 
-    const { kind } = classifyStartKind(type);
+    const { kind } = classifyGenerationKind(type);
     for (let i = openGenerations.length - 1; i >= 0; i--) {
         if (!openGenerations[i].confirmed && openGenerations[i].kind === kind) {
             openGenerations[i].confirmed = true;

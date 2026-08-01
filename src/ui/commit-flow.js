@@ -149,7 +149,11 @@ export async function confirmAndCommit({ chatId, targetIndex, raw, boundary, ins
         }
         return true;
     } catch (error) {
-        notify('error', `Intercession failed and was rolled back: ${error?.message ?? error}. Your response text was kept — open Intercede again to retry.`);
+        // One failure, one notice. @see docs/RATIONALE.md#ERR-02
+        console.error(`[Intercede] ${transaction.shortId} intercession failed:`, error);
+        if (!transaction.userWasNotified) {
+            notify('error', `Intercession failed and was rolled back: ${error?.message ?? error} Your response text was kept — open Intercede again to retry.`);
+        }
         return false;
     }
 }

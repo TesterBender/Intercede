@@ -457,6 +457,54 @@ prompt is still *ours* to remove, whereas an ambiguous tail is nobody's to touch
 Promotion requires all of: exactly one candidate, the chat at its expected length, the
 candidate at its expected index, reference identity still holding, and an assistant role.
 
+<a id="CAP-06"></a>
+### CAP-06 — A filter may only exclude on a value the host vouches for
+**Sites:** `src/generation-capture.js` › capture handler
+**Related:** [LEASE-13](#LEASE-13), [CAP-04](#CAP-04), [CAP-05](#CAP-05)
+
+`MESSAGE_RECEIVED` carries a generation type as its second argument, and capture used to
+compare `String(generationType)` against `'normal'` and drop anything else. That is the
+same mistake [LEASE-12](#LEASE-12) fixed on the end event, one file over: a payload that
+is *not demonstrably a kind* was being read as one, and a value the host never promised
+was silently deciding whether the continuation existed.
+
+The failure it produces is invisible from the outside. Drop the only candidate and the
+transaction sees zero, reports "No assistant continuation was captured", and enters
+recovery-required — a message that describes an empty generation when what actually
+happened is that the message arrived and was thrown away.
+
+So capture now shares [`classifyGenerationKind()`](#LEASE-13) with the lease, and excludes
+only when the value is a **named** kind other than the expected one. `defaulted` (absent —
+`normal` by the host's contract) and `opaque` (a value we cannot classify) are both
+admitted.
+
+Admitting more can never produce a false commit, because admission is not ownership.
+Every additional candidate still faces [CAP-05](#CAP-05), where the "exactly one" rule
+makes a second observation *fail closed* rather than open a choice. The direction of the
+error is what matters:
+
+| | old behaviour | new behaviour |
+|---|---|---|
+| Opaque type, message really ours | dropped → false recovery-required | proven structurally → commits |
+| Opaque type, message not ours | dropped → may commit the *wrong* single candidate | two candidates → refuses |
+
+The second row is the important one. Filtering on an unproven value did not merely lose
+our own message, it could also hide a foreign one that the count check exists to catch.
+
+<a id="CAP-07"></a>
+### CAP-07 — A refusal must say what it saw
+**Sites:** `src/generation-capture.js` › `evidence()`; `src/transaction.js` › `generateSuffix()`
+**Related:** [LEASE-14](#LEASE-14), [LEASE-11](#LEASE-11)
+
+"No assistant continuation was captured" has at least four distinct causes: the host
+emitted nothing, it emitted for another chat, the index did not resolve, or the event was
+set aside by kind. The user-facing text cannot carry that, and the previous build recorded
+it nowhere — so a single live occurrence was unfalsifiable after the fact.
+
+`evidence()` returns counts per reason plus the kind labels seen, logged once with the
+short transaction id when the proof fails. It follows [LEASE-14](#LEASE-14): counts, event
+names and kind labels, never message text.
+
 ---
 
 # One-generation lease — `LEASE-*`
@@ -820,8 +868,8 @@ a `hideStopButton()` that no-ops. Same leak, same reconciliation.
 
 <a id="LEASE-13"></a>
 ### LEASE-13 — A value is only a kind when the contract says so
-**Sites:** `src/lease.js` › `classifyStartKind()`, `onGenerationStarted()`
-**Guards:** INV-11 **Related:** [LEASE-03](#LEASE-03), [LEASE-05](#LEASE-05), [LEASE-12](#LEASE-12)
+**Sites:** `src/lease.js` › `classifyGenerationKind()`, `onGenerationStarted()`
+**Guards:** INV-11 **Related:** [LEASE-03](#LEASE-03), [LEASE-05](#LEASE-05), [LEASE-12](#LEASE-12), [CAP-06](#CAP-06)
 
 `GENERATION_STARTED` carries a type; `GENERATION_ENDED` does not
 ([LEASE-12](#LEASE-12)). The start side needs its own rule, because the previous one —
@@ -850,6 +898,10 @@ The three are counted separately (`namedStarts`, `defaultedStarts`, `opaqueStart
 on a supported host `opaqueStarts` should stay at zero, and a non-zero value is the first
 sign that the host contract has moved.
 
+The function is exported rather than private because `MESSAGE_RECEIVED` carries the same
+argument and assistant capture was reading it with the old `String(type)` rule — one host
+contract deserves one classifier, not two that can drift apart ([CAP-06](#CAP-06)).
+
 <a id="LEASE-14"></a>
 ### LEASE-14 — Evidence without content
 **Sites:** `src/lease.js` › `describeArg()`, `logLifecycleEvent()`, `getLifecycleLog()`, `resetLeaseTallies()`; `index.js` › `collectDiagnostics()`
@@ -866,8 +918,16 @@ armed.
 reproduced only when it is at most 24 characters *and* matches `/^[\w-]+$/` — `quiet`
 survives, a prompt or a line of dialogue cannot, because prose contains spaces and
 punctuation. Objects contribute key names only: `quiet_prompt` is a key, and its value is
-the user's text. The buffer is off by default (`debugLifecycle`) and excluded from the
-report unless enabled.
+the user's text.
+
+**Collection is always on; `debugLifecycle` controls exposure only.** A buffer you have to
+switch on before the fault occurs is empty in exactly the session that needed it — the
+live diagnostics this release was built from would have carried nothing. Because the
+redaction happens at the point of capture, always-on costs nothing that gating would have
+protected: there is no state in which the buffer holds content that the setting would have
+kept out of it. The setting decides whether `collectDiagnostics()` embeds the log in the
+pasted report; `Intercede.lifecycleLog()` reads it either way, and `resetLeaseTallies()`
+empties it.
 
 `resetLeaseTallies()` clears counters and the buffer and **nothing else**. Open records,
 the lease, the audit, the stop flag and the start sequence all survive, because a
@@ -971,6 +1031,31 @@ and a transformation there is only a warning.
 A Sørensen–Dice coefficient over word trigrams, as a rounded percentage. This measures
 textual overlap only — it is **not** a claim about semantic fidelity, and should never be
 presented as one.
+
+<a id="VAL-05"></a>
+### VAL-05 — A warning nobody can act on costs more than it catches
+**Sites:** `src/validator.js` › `META_COMMENTARY_PATTERNS`, `describeMetaCommentary()`
+**Related:** [VAL-01](#VAL-01), [TX-16](#TX-16)
+
+The meta-commentary check is advisory: it warns, it never rolls back, and it never edits
+prose. That makes its false-positive rate the only thing that decides whether it is worth
+having — an amber toast on a perfectly good continuation teaches the user to dismiss the
+next one unread.
+
+Two patterns were removed for firing on ordinary in-character text:
+
+- `per your instructions` — everyday dialogue (*"Per your instructions, my lord."*);
+- `original draft` — everyday narration in any scene containing a writer.
+
+What remains is either the prompt's own vocabulary (`scene notes`, `planning material` —
+words that only appear in the output if the instruction leaked) or a register no character
+speaks (`as an AI`, *"I have rewritten the passage"*).
+
+The wording changed too. "May contain meta-commentary about the rewrite" reads as damage;
+the continuation is committed and intact, and what is being asked for is a read-through.
+
+`describeMetaCommentary()` returns the matching pattern's **label**, which is what the
+console line and any future diagnostics field carry. The matched prose stays out of both.
 
 ---
 
@@ -1743,6 +1828,30 @@ slash-command-only.
 | `RecoveryRequiredError` | Ownership can no longer be proven. Nothing is deleted, evidence (journal + vault) is preserved, and the user is asked to decide |
 | `PreflightError` | Nothing was mutated, so there is nothing to undo |
 
+<a id="ERR-02"></a>
+### ERR-02 — One failure, one authoritative notice
+**Sites:** `src/transaction.js` › `enterRecoveryRequired()`, `userWasNotified`;
+`src/ui/commit-flow.js` › the `catch`
+**Related:** [ERR-01](#ERR-01), [TX-11](#TX-11), [TX-10](#TX-10)
+
+A `RecoveryRequiredError` used to produce two toasts that disagreed. `enterRecoveryRequired()`
+said the chat had been left alone and recovery was available; the caller's blanket `catch`
+then said the intercession *"failed and was rolled back"*. Only the first was true — the
+recovery-required path deliberately does **not** roll back — and the second arrived on top
+of it.
+
+Believing the wrong toast is not cosmetic. It says the original message is already back
+when it is still cut, and it discourages the one command that would restore it.
+
+The transaction is the only party that knows how it ended, so it owns the notice:
+`userWasNotified` is set by the terminal paths that speak for themselves — recovery-required
+and the chat-changed branch of [TX-10](#TX-10) — and the caller adds its own message only
+when nothing has been said. The caller still logs, with the short transaction id, always.
+
+The recovery notice also stopped offering `/intercede recover` unconditionally. It is
+offered when a journal for *this* transaction actually remains; otherwise there is nothing
+for recover to read, and pointing at it would be a third wrong instruction.
+
 <a id="CFG-01"></a>
 ### CFG-01 — Snapshots are kept indefinitely by default
 **Sites:** `src/constants.js` › `DEFAULT_SETTINGS.snapshotTtlDays`
@@ -1820,12 +1929,17 @@ shipped SillyTavern 1.18.0 source — strong, but it is still only what the code
 **running** profile, which remains a separate gate: a read of the source cannot show what
 a particular backend, a streaming path, or another installed extension actually does.
 
-1. **[CAP-02](#CAP-02) — assistant-message event payload. Read.** 1.18.0 emits
-   `MESSAGE_RECEIVED` with a bare integer index (plus a type argument), from both the
-   streaming processor and the non-streaming paths. [CAP-03](#CAP-03) accepts it. Should
-   a build pass something else, capture observes nothing and every intercession fails
-   closed: fix the adapter, record the real shape in tests, and do not loosen
-   [CAP-05](#CAP-05).
+1. **[CAP-02](#CAP-02) — assistant-message event payload. Read; index confirmed running.**
+   1.18.0 emits `MESSAGE_RECEIVED` with a bare integer index (plus a type argument), from
+   both the streaming processor and the non-streaming paths. [CAP-03](#CAP-03) accepts it,
+   and a live intercession has now committed against a real backend, which the index shape
+   could not have survived if it were wrong.
+
+   The *type* argument is a different matter and is **unverified**: no live report has ever
+   recorded what it actually holds on the path Intercede uses. Capture no longer depends on
+   the answer ([CAP-06](#CAP-06)) — that is the point of the change — but a build that
+   passes something unexpected still deserves a look at `evidence().kinds`, where an
+   `opaque` count is the tell.
 
 2. **[LEASE-05](#LEASE-05) — nested generation ordering. Read.** `Generate()` awaits
    `GENERATION_STARTED` near its top, and extension prompts are collected much later,
@@ -1852,7 +1966,26 @@ a particular backend, a streaming path, or another installed extension actually 
    emitted at all — question 3's leak, reached by pressing stop. Worth exercising the stop
    button on each backend.
 
-5. **Live-host behaviour generally. Unverified.** The suite drives a jsdom fake. Streaming,
-   real backends, display regexes, and other extensions are exercised only by the manual
-   matrix in [RELEASE-QA.md](RELEASE-QA.md). Treat a green suite as necessary, not
-   sufficient.
+5. **Live-host behaviour generally. Partly run.** The suite drives a jsdom fake. One live
+   session on 1.18.0 has now exercised idle and repeated composer diagnostics, an ordinary
+   commit, and a deliberate quiet overlap — all passing, recorded in
+   [RELEASE-TESTS.md](RELEASE-TESTS.md). Streaming, cancellation, undo, repeated use,
+   display regexes and other extensions remain unrun. Treat a green suite as necessary,
+   not sufficient.
+
+6. **A single unreproduced capture failure. Unverified.** One intercession in that session
+   failed with "No assistant continuation was captured", after a run of interference
+   testing, and did not recur. Three explanations remain open: the host produced no message
+   because the probe had left it in an odd state (in which case failing closed was correct),
+   the message was discarded by the kind filter ([CAP-06](#CAP-06), now removed as a
+   possibility), or something in the capture window that nothing recorded. Only the second
+   is closed. [CAP-07](#CAP-07) exists so a recurrence arrives with evidence instead of a
+   third round of speculation — the ten-intercession row is where to watch for it.
+
+7. **`body.dataset.generating` never answered. Read; contradicted in the field.** The probe
+   chain in [HOST-06](#HOST-06) expects it as the strong middle answer, but every live
+   report so far reads `#mes_stop (weak)`, meaning neither `ctx.isGenerating` nor the
+   dataset flag produced anything on that build. Nothing failed as a result, and the
+   busy-only reading means a flag that never appears costs nothing. It does mean the
+   weakest source is carrying every eligibility decision in practice, which is the real
+   reason non-streaming cancellation is still the row most worth walking.

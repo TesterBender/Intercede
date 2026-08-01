@@ -7,6 +7,7 @@
  */
 
 import { RecoveryRequiredError } from './errors.js';
+import { classifyGenerationKind } from './lease.js';
 import { getCurrentChatId, getEventSource, getEventTypes } from './stcontext.js';
 import { markOwnedMessage, OWNED_ROLE } from './ownership.js';
 
@@ -34,9 +35,11 @@ export function getCaptureEventName(ctx) {
 /**
  * Watch for assistant messages while this transaction is generating.
  *
- * @returns {{ finish: () => Array, dispose: () => void, eventName: string }}
+ * @returns {{ finish: () => Array, evidence: () => object, dispose: () => void, eventName: string }}
  *   `finish()` yields every candidate observed, in arrival order. It never
  *   decides which one is ours — @see docs/RATIONALE.md#CAP-01
+ *   `evidence()` reports why the events that did *not* become candidates were
+ *   set aside. Counts and kind names only — @see docs/RATIONALE.md#CAP-07
  */
 export function beginAssistantCapture(ctx, { chatId, expectedGenerationKind = 'normal' }) {
     const eventName = getCaptureEventName(ctx);
@@ -45,25 +48,43 @@ export function beginAssistantCapture(ctx, { chatId, expectedGenerationKind = 'n
     }
 
     const candidates = [];
+    /** Why events were set aside. Metadata only. @see docs/RATIONALE.md#CAP-07 */
+    const observed = {
+        events: 0,
+        otherChat: 0,
+        namedOtherKind: 0,
+        unresolvedIndex: 0,
+        notAssistant: 0,
+        alreadySeen: 0,
+        kinds: {},
+    };
     let closed = false;
 
     const handler = (payload, generationType) => {
         if (closed) return;
-        if (getCurrentChatId(ctx) !== chatId) return;
+        observed.events += 1;
+        if (getCurrentChatId(ctx) !== chatId) { observed.otherChat += 1; return; }
 
-        // @see docs/RATIONALE.md#CAP-04
-        const kind = (generationType === undefined || generationType === null || generationType === '')
-            ? 'normal'
-            : String(generationType);
-        if (kind !== expectedGenerationKind) return;
+        // @see docs/RATIONALE.md#CAP-04, #CAP-06
+        const { kind, source } = classifyGenerationKind(generationType);
+        const label = source === 'opaque' ? 'opaque' : kind;
+        observed.kinds[label] = (observed.kinds[label] ?? 0) + 1;
+
+        if (source === 'named' && kind !== expectedGenerationKind) {
+            observed.namedOtherKind += 1;
+            return;
+        }
 
         const index = normalizeMessageIndex(payload, ctx);
         const message = ctx.chat[index];
-        if (!message || message.is_user || message.is_system) return;
+        if (!message) { observed.unresolvedIndex += 1; return; }
+        if (message.is_user || message.is_system) { observed.notAssistant += 1; return; }
+        if (candidates.some(candidate => candidate.message === message)) {
+            observed.alreadySeen += 1;
+            return;
+        }
 
-        if (candidates.some(candidate => candidate.message === message)) return;
-
-        candidates.push({ index, message, kind });
+        candidates.push({ index, message, kind, kindSource: source });
     };
 
     getEventSource(ctx)?.on(eventName, handler);
@@ -78,6 +99,9 @@ export function beginAssistantCapture(ctx, { chatId, expectedGenerationKind = 'n
         finish() {
             dispose();
             return [...candidates];
+        },
+        evidence() {
+            return { eventName, expectedGenerationKind, candidates: candidates.length, ...observed };
         },
         dispose,
         eventName,

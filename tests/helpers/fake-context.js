@@ -290,10 +290,11 @@ export async function emitHostStop(ctx) {
  * GENERATION_ENDED in the order a real backend does.
  *
  * `endPayload` defaults to the host-realistic `chat.length`; pass a kind only to
- * model a host that names one.
+ * model a host that names one. `receivedType` is the second `MESSAGE_RECEIVED`
+ * argument — omitted by default, as SillyTavern omits it for an ordinary send.
  */
 export function respondWith(ctx, text, options = {}) {
-    const { kind = 'normal', extraMessages = [], emitReceived = true, endPayload } = options;
+    const { kind = 'normal', extraMessages = [], emitReceived = true, endPayload, receivedType } = options;
     return async () => {
         await emitHostStart(ctx, kind);
 
@@ -301,7 +302,7 @@ export function respondWith(ctx, text, options = {}) {
         ctx.chat.push(generated);
         const index = ctx.chat.length - 1;
         if (emitReceived) {
-            await ctx.eventSource.emit(ctx.eventTypes.MESSAGE_RECEIVED, index);
+            await ctx.eventSource.emit(ctx.eventTypes.MESSAGE_RECEIVED, index, receivedType);
         }
 
         for (const extra of extraMessages) {

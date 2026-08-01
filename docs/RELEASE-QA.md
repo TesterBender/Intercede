@@ -72,15 +72,16 @@ Three consequences that the matrix below is designed to exercise:
 
 ## Generation lifecycle
 
-Read these off `/intercede diagnostics`. Enable the event log first:
+Read these off `/intercede diagnostics`. The event log is recorded either way; this only
+makes the report carry it ([LEASE-14](RATIONALE.md#LEASE-14)):
 
 ```js
 Intercede.setDebugLifecycle(true)
 ```
 
 It records event names, argument *shapes*, resolved kinds and open counts — never prompt
-or chat text ([LEASE-14](RATIONALE.md#LEASE-14)). `Intercede.resetDiagnostics()` clears
-counters and the log between cases and touches no safety state.
+or chat text. `Intercede.resetDiagnostics()` clears counters and the log between cases and
+touches no safety state.
 
 | Test | Required result |
 | --- | --- |
@@ -90,6 +91,23 @@ counters and the log between cases and touches no safety state.
 | Stop button pressed mid-generation | `0 open` at rest, or a reconciliation that clears it; stop recorded |
 | Quiet generation overlapping an intercession | Rolls back; records may leak upward but must self-clear, never lock the extension out |
 | Ten intercessions in one session | `starts`/`ends` need not match; `0 open` at rest is what matters |
+
+## Failure reporting
+
+The failure path is exercised least and read most carefully, so walk it deliberately —
+disconnect the backend, or stop a generation before any message arrives.
+
+| Test | Required result |
+| --- | --- |
+| An intercession that fails and rolls back | **One** red toast, saying it was rolled back; the original message is whole; no mention of `/intercede recover` |
+| An intercession that stops for review | **One** red toast, saying nothing further was changed, offering `/intercede recover`; no toast claiming a rollback |
+| Either failure | The typed response is still there when Intercede is reopened |
+| Console after either | One line with a short transaction id; a capture failure also logs counts per reason ([CAP-07](RATIONALE.md#CAP-07)) |
+| `/intercede recover` after the stop case | Restores the original message exactly |
+
+A continuation that commits **with** an amber warning is a pass, not a failure: quality
+warnings are advisory ([VAL-05](RATIONALE.md#VAL-05)). Note the wording of any that fire
+on ordinary in-character prose — that is the false-positive report worth having.
 
 Expected on a healthy 1.18.0 session:
 
@@ -108,8 +126,18 @@ Expected on a healthy 1.18.0 session:
 /intercede diagnostics
 ```
 
-The toast is one line and reports only what is abnormal. Healthy output ends in `clean`
-and shows:
+The toast is one line and reports only what is worth a second look.
+
+Two healthy shapes exist, and only one of them says `clean`:
+
+- **From the console** (`Intercede.diagnostics()`) — nothing ran, so nothing needed
+  settling: `… — 0 open — clean`.
+- **From the composer** (`/intercede diagnostics`) — the command *is* a generation as far
+  as SillyTavern is concerned, so it settles its own abandoned start and says so:
+  `… — 0 open — 1 reconciled now`. That is the expected reading, not a fault
+  ([LEASE-15](RATIONALE.md#LEASE-15)).
+
+What matters in both is `0 open`. Healthy output shows:
 
 - no active transaction;
 - no armed generation lease;

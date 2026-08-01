@@ -115,6 +115,11 @@ Interceding mutates canonical history, so every operation runs as a transaction:
   created, newest first, and restores the original message from the snapshot. It never
   truncates the chat by length. If ownership cannot be proven, it stops, deletes nothing,
   keeps the journal and snapshot, and asks you what to do.
+- **One failure, one message** — a transaction that stops for review says so itself, and
+  nothing adds a second notice claiming it was rolled back. The two outcomes are different
+  in kind: a rollback has already put your original message back, while a stop leaves the
+  chat as it is and hands you `/intercede recover`. That command is only ever offered when
+  something is actually left to recover. Either way your typed response is kept.
 - **Recovery journal** — a synchronous localStorage journal is written and read back around
   every risky step; if it cannot be verified, the intercession aborts before any message is
   changed. After a reload or crash, Intercede offers to restore the original message; it
@@ -152,6 +157,24 @@ than merely changed text — invalidate from there, not just the listed ids. A `
 `fromIndex` means "assume everything". Note that `intercede_before_commit` is
 informational: listeners cannot veto a commit, and any history they change is detected by
 the re-validation above. A small console API is exposed at `window.Intercede`.
+
+## What it stores, and where
+
+Everything is local to the browser profile SillyTavern is open in. No request leaves for
+any service Intercede owns, and there is no telemetry or analytics of any kind.
+
+| Where | What | Lifetime |
+| --- | --- | --- |
+| `localforage` (IndexedDB) | Undo snapshots: the complete original message, the discarded continuation, and the cut | Until `/intercede finalize`, or `/intercede cleanup` past the configured age (default: keep forever) |
+| `localStorage` | The recovery journal — ids, stages, a hash of the target message. No message text | Cleared on commit or rollback; survives a crash on purpose |
+| Chat metadata | Compact per-transaction records (ids, indices, state) | Travels with the chat file |
+| SillyTavern extension settings | Your preferences | Until changed |
+| Memory only | The bounded lifecycle log (last 64 events, no content) | Until reload or `/intercede reset` |
+
+Settings added by a new version fill themselves in with their defaults the first time that
+version loads; existing choices are never rewritten, and nothing needs migrating by hand.
+Snapshots are the only storage that grows, which is what `/intercede cleanup` and the
+snapshot-age setting are for.
 
 ## Limitations (v0.6)
 
@@ -201,15 +224,17 @@ streaming, or another installed extension. Releases also walk the live matrix in
 **[docs/RELEASE-QA.md](docs/RELEASE-QA.md)**, recording results in
 [docs/RELEASE-TESTS.md](docs/RELEASE-TESTS.md).
 
-When a lifecycle problem needs evidence rather than counters, turn on the bounded event
-log:
+When a lifecycle problem needs evidence rather than counters, read the bounded event log.
+It is **always being recorded** — the last 64 lifecycle events, as event names, argument
+*shapes*, resolved generation kinds and open counts, never prompt or chat text. A buffer
+you have to switch on before the bug happens is empty in the session that needed it, and
+because entries are redacted as they are captured there is nothing to gate.
 
 ```js
-Intercede.setDebugLifecycle(true)   // then reproduce, then /intercede diagnostics
+Intercede.lifecycleLog()            // read it now, whatever the settings say
+Intercede.setDebugLifecycle(true)   // include it in /intercede diagnostics from now on
+Intercede.resetDiagnostics()        // empty it and the counters; touches no safety state
 ```
-
-It records event names, argument *shapes*, resolved generation kinds and open counts —
-never prompt or chat text — for the last 64 lifecycle events.
 
 ## Why the code does what it does
 
