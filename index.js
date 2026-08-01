@@ -10,7 +10,7 @@
  */
 
 import { INTERCEDE_EVENTS } from './src/constants.js';
-import { getLeaseDiagnostics, initLease, isGenerationActive } from './src/lease.js';
+import { getLeaseDiagnostics, getLifecycleLog, initLease, resetLeaseTallies } from './src/lease.js';
 import { getBoundaries, getProtectedRanges } from './src/segmentation.js';
 import {
     checkCapabilities,
@@ -19,6 +19,7 @@ import {
     getEventSource,
     getEventTypes,
     getSettings,
+    saveSettings,
 } from './src/stcontext.js';
 import { checkRecovery, cleanupSnapshots, finalizeIntercession, undoIntercession } from './src/transaction.js';
 import { showCompare } from './src/ui/compare.js';
@@ -87,6 +88,15 @@ async function handleSlashCommand(action) {
             notify('info', describeDiagnostics(report));
             return JSON.stringify(report, null, 2);
         }
+        // Counters and the event log only. Nothing that decides safety.
+        // @see docs/RATIONALE.md#LEASE-14
+        case 'diagnostics reset':
+        case 'reset': {
+            const result = resetLeaseTallies();
+            console.info('[Intercede] diagnostics counters reset', result);
+            notify('info', `Diagnostic counters and event log cleared. ${result.openCount} open generation(s) and the lease state were left untouched.`);
+            return '';
+        }
         case 'cleanup': {
             const days = getSettings().snapshotTtlDays;
             const result = await cleanupSnapshots(days);
@@ -101,7 +111,7 @@ async function handleSlashCommand(action) {
             return '';
         }
         default:
-            notify('warning', `Unknown /intercede action "${action}". Use: undo, compare, recover, finalize, cleanup, diagnostics.`);
+            notify('warning', `Unknown /intercede action "${action}". Use: undo, compare, recover, finalize, cleanup, diagnostics, reset.`);
             return '';
     }
 }
@@ -112,6 +122,11 @@ async function handleSlashCommand(action) {
  */
 function collectDiagnostics() {
     const ctx = getCtx();
+    // One call, one reconciliation, one truth. `getLeaseDiagnostics()` settles the
+    // host state and reports what is left afterwards; asking `isGenerationActive()`
+    // separately used to reconcile *after* this object had already been built, so
+    // every idle report described records that no longer existed.
+    // @see docs/RATIONALE.md#LEASE-11
     const lease = getLeaseDiagnostics();
     return {
         version: VERSION,
@@ -119,11 +134,13 @@ function collectDiagnostics() {
         parserBuild: probeParserBuild(),
         capabilities: checkCapabilities(),
         eligibility: {
-            generationActive: isGenerationActive(),
+            generationActive: lease.generationActive,
             hostSays: lease.host,
             openGenerations: lease.openCount,
         },
         lease,
+        // @see docs/RATIONALE.md#LEASE-14 — metadata only, never prompt or chat text
+        lifecycleLog: getSettings().debugLifecycle ? getLifecycleLog() : 'disabled',
         journal: readJournal(),
         chat: {
             id: getCurrentChatId(ctx),
@@ -132,16 +149,29 @@ function collectDiagnostics() {
     };
 }
 
+/**
+ * The one line the user pastes into a bug report.
+ * Everything else stays in the console. @see docs/RATIONALE.md#LEASE-11
+ */
 function describeDiagnostics(report) {
     const { hostSays, openGenerations, generationActive } = report.eligibility;
-    const { unmatchedEnds, kindMismatchedEnds, dryRuns, starts, ends } = report.lease.events;
+    const { unconfirmedOpen, reconciledNow } = report.lease;
+    const { kindMismatchedEnds, unmatchedEnds } = report.lease.events;
+
+    const notes = [];
+    if (unconfirmedOpen) notes.push(`${unconfirmedOpen} unconfirmed`);
+    if (reconciledNow) notes.push(`${reconciledNow} reconciled now`);
+    // On a host that names no kind these must stay at zero.
+    // @see docs/RATIONALE.md#LEASE-12
+    if (kindMismatchedEnds) notes.push(`${kindMismatchedEnds} kind mismatches`);
+    if (unmatchedEnds) notes.push(`${unmatchedEnds} unmatched ends`);
+    if (report.journal) notes.push('journal present');
+
     return [
         `generation ${generationActive ? 'ACTIVE' : 'idle'}`,
-        `host ${hostSays.state} via ${hostSays.source}`,
+        `host ${hostSays.state} (${hostSays.confidence}) via ${hostSays.source}`,
         `${openGenerations} open`,
-        // Kind mismatches belong on the pasted line: on a host that names no kind
-        // they should stay at zero. @see docs/RATIONALE.md#LEASE-12
-        `${starts} starts / ${ends} ends / ${dryRuns} dry runs / ${unmatchedEnds} unmatched ends / ${kindMismatchedEnds} kind mismatches`,
+        notes.length ? notes.join(', ') : 'clean',
         'full report in the browser console',
     ].join(' — ');
 }
@@ -153,7 +183,7 @@ function registerSlashCommands(ctx) {
             const unnamedArgumentList = [];
             if (SlashCommandArgument?.fromProps) {
                 unnamedArgumentList.push(SlashCommandArgument.fromProps({
-                    description: 'action: undo | compare | recover | finalize | cleanup | diagnostics (empty opens boundary selection)',
+                    description: 'action: undo | compare | recover | finalize | cleanup | diagnostics | reset (empty opens boundary selection)',
                     typeList: ARGUMENT_TYPE ? [ARGUMENT_TYPE.STRING] : undefined,
                     isRequired: false,
                 }));
@@ -162,7 +192,7 @@ function registerSlashCommands(ctx) {
                 name: 'intercede',
                 callback: (_namedArgs, value) => handleSlashCommand(value),
                 unnamedArgumentList,
-                helpString: 'Respond inside the latest completed assistant message. Actions: <code>undo</code>, <code>compare</code>, <code>recover</code>, <code>finalize</code>, <code>cleanup</code>, <code>diagnostics</code>.',
+                helpString: 'Respond inside the latest completed assistant message. Actions: <code>undo</code>, <code>compare</code>, <code>recover</code>, <code>finalize</code>, <code>cleanup</code>, <code>diagnostics</code>, <code>reset</code> (diagnostic counters only).',
             }));
             return;
         }
@@ -171,7 +201,7 @@ function registerSlashCommands(ctx) {
                 'intercede',
                 (_namedArgs, value) => handleSlashCommand(value),
                 [],
-                '<span class="monospace">(undo | compare | recover | finalize | cleanup | diagnostics)</span> – respond inside the latest assistant message',
+                '<span class="monospace">(undo | compare | recover | finalize | cleanup | diagnostics | reset)</span> – respond inside the latest assistant message',
                 true,
                 true,
             );
@@ -242,6 +272,15 @@ async function init() {
         compare: showCompare,
         recover: checkRecovery,
         diagnostics: collectDiagnostics,
+        // @see docs/RATIONALE.md#LEASE-14 — diagnostic only, no safety state
+        lifecycleLog: getLifecycleLog,
+        resetDiagnostics: resetLeaseTallies,
+        /** Include the lifecycle log in diagnostics. Metadata only; off by default. */
+        setDebugLifecycle: (on = true) => {
+            getSettings().debugLifecycle = Boolean(on);
+            saveSettings();
+            return getSettings().debugLifecycle;
+        },
         events: INTERCEDE_EVENTS,
     });
 

@@ -140,6 +140,7 @@ export function installFakeSillyTavern(options = {}) {
             APP_READY: 'app_ready',
             CHAT_CHANGED: 'chat_changed',
             GENERATION_STARTED: 'generation_started',
+            GENERATION_AFTER_COMMANDS: 'generation_after_commands',
             GENERATION_ENDED: 'generation_ended',
             GENERATION_STOPPED: 'generation_stopped',
             MESSAGE_RECEIVED: 'message_received',
@@ -230,6 +231,38 @@ export async function runTransaction(transactionModule, { ctx, targetIndex = ctx
 }
 
 /**
+ * Emit the start pair a generation that actually proceeds produces.
+ *
+ * `Generate()` emits `GENERATION_STARTED` unconditionally and
+ * `GENERATION_AFTER_COMMANDS` only once slash-command processing has *not*
+ * aborted it. Anything that models a real generation must emit both.
+ */
+export async function emitHostStart(ctx, kind = undefined) {
+    await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, kind, {}, false);
+    await ctx.eventSource.emit(ctx.eventTypes.GENERATION_AFTER_COMMANDS, kind, {}, false);
+}
+
+/**
+ * Emit what SillyTavern produces when a slash command is typed into the composer.
+ *
+ * `sendTextareaMessage()` reaches `Generate()`, which emits `GENERATION_STARTED`
+ * before running `processCommands()`. The command reports that it interrupted
+ * the send, so `Generate()` calls `unblockGeneration()` and returns — before the
+ * stop button was ever shown. There is therefore **no** `GENERATION_AFTER_COMMANDS`
+ * and **no** `GENERATION_ENDED`: the start is simply abandoned.
+ *
+ * @param {object} ctx
+ * @param {Function} [command] runs where the slash command's own body would
+ */
+export async function emitHostSlashCommand(ctx, command = async () => {}) {
+    await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, undefined, {}, false);
+    const result = await command();
+    // unblockGeneration() → activateSendButtons() → hideStopButton(), which
+    // no-ops because the button was never shown. Nothing is emitted.
+    return result;
+}
+
+/**
  * Emit `GENERATION_ENDED` the way the host does.
  *
  * SillyTavern 1.18.0 emits it from `hideStopButton()` carrying `chat.length` —
@@ -262,7 +295,7 @@ export async function emitHostStop(ctx) {
 export function respondWith(ctx, text, options = {}) {
     const { kind = 'normal', extraMessages = [], emitReceived = true, endPayload } = options;
     return async () => {
-        await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, kind, {}, false);
+        await emitHostStart(ctx, kind);
 
         const generated = assistantMessage(text);
         ctx.chat.push(generated);

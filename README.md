@@ -64,6 +64,7 @@ SillyTavern/public/scripts/extensions/third-party/Intercede
 | `/intercede finalize` | Delete the undo snapshot for the intercession at the chat tail (messages stay) |
 | `/intercede cleanup` | Delete unused undo snapshots older than the configured age |
 | `/intercede diagnostics` | Report generation state, host probe, and event tallies (also `Intercede.diagnostics()`) |
+| `/intercede reset` | Clear diagnostic counters and the event log. Touches no lease or transaction state |
 
 ## Safety model
 
@@ -197,7 +198,18 @@ recorded in the tests.
 
 A green suite is necessary but not sufficient — it cannot exercise a real backend,
 streaming, or another installed extension. Releases also walk the live matrix in
-**[docs/RELEASE-QA.md](docs/RELEASE-QA.md)**.
+**[docs/RELEASE-QA.md](docs/RELEASE-QA.md)**, recording results in
+[docs/RELEASE-TESTS.md](docs/RELEASE-TESTS.md).
+
+When a lifecycle problem needs evidence rather than counters, turn on the bounded event
+log:
+
+```js
+Intercede.setDebugLifecycle(true)   // then reproduce, then /intercede diagnostics
+```
+
+It records event names, argument *shapes*, resolved generation kinds and open counts —
+never prompt or chat text — for the last 64 lifecycle events.
 
 ## Why the code does what it does
 

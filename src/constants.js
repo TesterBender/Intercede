@@ -94,6 +94,11 @@ export const DEFAULT_SETTINGS = Object.freeze({
     snapshotTtlDays: 0,
     showButton: true,
     warnExtensions: true,
+    /**
+     * Include the bounded lifecycle event log in `/intercede diagnostics`.
+     * Metadata only — never prompt or chat text. @see docs/RATIONALE.md#LEASE-14
+     */
+    debugLifecycle: false,
 });
 
 /** Anchor context window (characters kept on each side of the cut for rebasing). */

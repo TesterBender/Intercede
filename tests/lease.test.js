@@ -7,7 +7,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { emitHostGenerationEnded, emitHostStop, freshModules, installFakeSillyTavern, uninstallFakeSillyTavern } from './helpers/fake-context.js';
+import { emitHostGenerationEnded, emitHostStart, emitHostStop, freshModules, installFakeSillyTavern, uninstallFakeSillyTavern } from './helpers/fake-context.js';
 
 async function setup() {
     vi.resetModules();
@@ -194,9 +194,8 @@ describe('SillyTavern 1.18.0 lifecycle', () => {
     /** The text of the most recent setExtensionPrompt() call. */
     const lastPrompt = ctx => ctx.setExtensionPrompt.mock.calls.at(-1)?.[1];
 
-    /** A normal send: the host passes no type at all. */
-    const hostStart = ctx =>
-        ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, undefined, {}, false);
+    /** A normal send: the host passes no type at all, then clears slash commands. */
+    const hostStart = ctx => emitHostStart(ctx);
 
     it('completes a leased generation whose end carries chat.length', async () => {
         const { ctx, lease } = await setup();
