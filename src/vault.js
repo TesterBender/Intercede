@@ -123,12 +123,8 @@ export async function vaultKeys() {
 /**
  * Delete vault records older than ttlDays. ttlDays <= 0 keeps everything.
  *
- * A record's own `state` says what it was for; it cannot say whether anything
- * still points at it, because the journal and the chat metadata live elsewhere.
- * That is what `protectedKeys` carries — see `cleanupSnapshots()`, which is the
- * caller every entry point should use.
- *
- * @see docs/RATIONALE.md#VAULT-02 which records are protected, and why
+ * Call `cleanupSnapshots()` instead — it is what composes `protectedKeys`.
+ * @see docs/RATIONALE.md#VAULT-02 which records are protected, and why `state` cannot say
  * @param {number} ttlDays
  * @param {Set<string>} [protectedKeys] keys something still references
  * @returns {Promise<number>} number of records removed

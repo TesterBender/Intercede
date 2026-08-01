@@ -149,15 +149,13 @@ export function isLeaseArmed() {
 
 /**
  * Is a generation running right now?
- *
- * The host answers when it can; our own event bookkeeping is the fallback for
- * builds that expose nothing. @see docs/RATIONALE.md#LEASE-10
+ * @see docs/RATIONALE.md#LEASE-10 the host answers first; the count is the fallback
  */
 export function isGenerationActive() {
     const probe = probeHostGeneration();
     if (probe.state === 'busy') return true;
     if (probe.state === 'idle') {
-        // Answering is always safe; dropping records is what needs a fence.
+        // @see docs/RATIONALE.md#LEASE-10 — answering vs dropping records
         reconcileWithHost();
         return false;
     }

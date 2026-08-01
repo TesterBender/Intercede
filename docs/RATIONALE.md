@@ -1002,11 +1002,20 @@ separate concern, handled by [VIS-01](#VIS-01).
 
 <a id="SEG-02"></a>
 ### SEG-02 — Protected ranges
-**Sites:** `src/segmentation.js` › `getProtectedRanges()`, `isOffsetProtected()`
+**Sites:** `src/segmentation.js` › `getProtectedRanges()`, `isOffsetProtected()`, `getBoundaries()`
 
 Boundaries are only offered between safe textual units — never inside fenced or inline
 code, Markdown links/images, raw HTML tags, macro expressions, or an unfinished
 quotation. An unclosed trailing fence protects to end of text.
+
+Sentence segmentation skips a whole block when it is protected, and the containment test
+asks whether **one** range covers the block end to end — not whether each of its two ends
+falls inside *some* range. The weaker test is the tempting one, and it is wrong in a case
+that occurs constantly in roleplay: two adjacent emphasis spans with free text between
+them. Each end of the block sits inside a different range, so the block reads as fully
+protected and every sentence boundary in the gap disappears. Over-protection is the safe
+direction for a *cut* ([SEG-07](#SEG-07)), but here it silently costs boundaries that were
+never in a protected range at all.
 
 <a id="SEG-03"></a>
 ### SEG-03 — A paragraph break is a blank line
@@ -1456,6 +1465,14 @@ Two constraints on how far this goes:
   Reversing it would relocate the button under the user's cursor on the two most
   consequential dialogs in the extension, to satisfy a convention. The composer was changed
   to match the modal instead; the modal was left alone.
+
+**The settings drawer is bound by `id`, after the fact.** `initSettingsPanel()` inserts
+`PANEL_HTML` and *then* attaches every handler by element id, so wrapper elements — the
+sections, the headings, the action row this rule introduced — can be rearranged freely for
+layout, but no `id` may move to a different control or disappear. A layout pass that
+renames one breaks the binding silently: the panel still renders, and the control it
+belongs to simply stops doing anything. `tests/settings-panel.test.js` enumerates every
+bound id and asserts the markup still carries it.
 
 **The width correction has to be global.** SillyTavern styles `.menu_button` as
 `width: min-content`, which wraps a multi-word label one word per line — and inside
