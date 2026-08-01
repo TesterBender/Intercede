@@ -1,13 +1,33 @@
 # Release QA — live host matrix
 
 The automated suite runs against a jsdom fake. It proves the logic; it cannot prove the
-host. This matrix is the gate that must be walked in a real SillyTavern **1.18.0**
-installation before tagging a release.
+host. Everything below is what a real SillyTavern **1.18.0** installation is for.
 
-Run it against at least one chat-completion backend and one text-completion backend. Note
-which backend each row was exercised on — several rows behave differently per backend.
+Record outcomes in [RELEASE-TESTS.md](RELEASE-TESTS.md), including the ones you skip.
 
-Record outcomes in [RELEASE-TESTS.md](RELEASE-TESTS.md).
+## How much of this is required
+
+The full matrix is **recommended** for high-confidence compatibility coverage, ideally
+against one chat-completion and one text-completion backend, noting which backend exercised
+each row.
+
+The **minimum release gate** is narrower, and deliberately so:
+
+- the automated suite passes on the commit being released, and CI agrees;
+- a normal intercession commits, on at least one live backend;
+- rollback, undo and `/intercede diagnostics` behave on that same build;
+- the prompt-integrity path fails closed — a generation that overlaps and strips the
+  instruction must roll back rather than commit;
+- no known defect can corrupt canonical history.
+
+A release may proceed with rows marked `not run`, provided the maintainer accepts the gap
+knowingly and it is written down. That is a judgement about *compatibility breadth*, which
+field reports cover well. It is not a judgement about safety, which they do not: the gate
+rows above are the ones where a defect silently damages a chat, and they are not waivable.
+
+Rows that cannot be produced by hand — an absent event argument, a suppressed message
+event — belong in the automated suite and are listed as such in
+[RELEASE-TESTS.md](RELEASE-TESTS.md). Do not ask a person to manufacture them.
 
 ## Before you start: confirm which build is loaded
 
@@ -148,6 +168,9 @@ What matters in both is `0 open`. Healthy output shows:
 - no kind-mismatched or unmatched ends.
 
 ## Why non-streaming cancellation deserves extra attention
+
+*(Not walked for v0.6.0 — an accepted gap. Streaming cancellation passed. This is the first
+row to walk if a cancellation problem is ever reported.)*
 
 SillyTavern 1.18.0 exposes no universal `isGenerating` boolean, so
 `probeHostGeneration()` falls back to `body.dataset.generating` and then to `#mes_stop`

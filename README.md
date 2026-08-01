@@ -22,8 +22,9 @@ The revised continuation is an ordinary assistant message, so it can be interced
 answer inside it, and the remainder of *that* is regenerated the same way. Intercessions
 chain as deep as the scene warrants, and undo unwinds them newest-first.
 
-Requires **SillyTavern 1.18.0+**. Works with streaming disabled or enabled; no server plugin,
-no external services, nothing leaves your browser.
+Requires **SillyTavern 1.18.0+**. Works with streaming disabled or enabled. No server
+plugin, no telemetry, and no Intercede-operated service; generation goes through the
+backend you have already configured in SillyTavern, exactly as an ordinary message does.
 
 ## Installation
 
@@ -160,8 +161,15 @@ the re-validation above. A small console API is exposed at `window.Intercede`.
 
 ## What it stores, and where
 
-Everything is local to the browser profile SillyTavern is open in. No request leaves for
-any service Intercede owns, and there is no telemetry or analytics of any kind.
+Everything in the table below stays in the browser profile SillyTavern is open in. No
+request leaves for any service Intercede owns; there is no telemetry or analytics of any
+kind.
+
+What does leave is the generation itself. Interceding sends a request through your
+configured SillyTavern backend, carrying the same chat context an ordinary message would
+plus the discarded continuation as scene notes. That is the whole point of the feature, and
+it is subject to whatever your backend and its provider do with a request — Intercede
+neither adds a destination nor removes one.
 
 | Where | What | Lifetime |
 | --- | --- | --- |

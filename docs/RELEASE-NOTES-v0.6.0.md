@@ -11,12 +11,12 @@ Assets:   none — SillyTavern installs from the repository URL
 
 Publish only once, in this order:
 
-1. the live matrix in [RELEASE-QA.md](RELEASE-QA.md) has been walked on the **fixed build**
-   and recorded in [RELEASE-TESTS.md](RELEASE-TESTS.md), including the backend, browser and
-   streaming state;
-2. the branch is merged and CI is green **on the merge commit**;
-3. a clean install from the repository URL has been loaded once and `/intercede diagnostics`
-   reports version `0.6.0` with `opaqueEnds` present.
+1. the branch is merged into `main`;
+2. GitHub Actions is **green on the exact commit being tagged** — the merge commit;
+3. the maintainer authorizes the tag.
+
+The live QA gate is closed: results and accepted gaps are recorded in
+[RELEASE-TESTS.md](RELEASE-TESTS.md).
 
 ---
 
@@ -24,8 +24,9 @@ Respond inside an already completed assistant message. Pick a boundary, write yo
 and the remainder is regenerated as a real Assistant → User → Assistant exchange, with the
 original continuation kept as recoverable, non-canonical editorial reference.
 
-Requires **SillyTavern 1.18.0+**. No server plugin, no external services, nothing leaves
-your browser.
+Requires **SillyTavern 1.18.0+**. No server plugin, no telemetry, and no Intercede-operated
+service; generation goes through the backend you have already configured in SillyTavern.
+Undo snapshots and the recovery journal stay in your browser profile.
 
 ## Highlights
 
@@ -100,6 +101,29 @@ source rather than assumed:
 - The toast is one line reporting only what is worth a second look; the full report stays
   in the console. From the composer it will normally say `0 open — 1 reconciled now`,
   because the command is itself a generation SillyTavern abandoned.
+
+## What was tested for this release
+
+The automated suite is **257 tests across 17 files**, run against a jsdom fake of the host.
+
+Live, on SillyTavern 1.18.0 with a streaming chat-completion backend: a clean diagnostics
+baseline, three consecutive composer `/intercede diagnostics` with no records accumulating,
+an ordinary intercession committed, the comparison view, undo restoring the original,
+cancelling mid-generation, and — deliberately provoked — a nested quiet generation stripping
+the rewrite instruction, which rolled back rather than committing an uninstructed
+continuation.
+
+Not exercised for this release, and released knowing it:
+
+- non-streaming cancellation;
+- text-completion and local-LLM backends;
+- mobile layout and a keyboard-only pass;
+- extended repeated use in one session;
+- a broad third-party extension matrix.
+
+These are coverage gaps, not known faults. Reports from environments outside that list are
+genuinely useful — `/intercede diagnostics` produces a report that is safe to paste, since
+it carries counters and event shapes but no prompt or chat text.
 
 ## Known limitations
 
