@@ -421,7 +421,11 @@ The event name and payload shape are the only host-version coupling in this file
 1.18.x differs from the normalisation here, fix it *here* and record the observed payload
 in tests — **never** by relaxing the ownership proof downstream.
 
-> Unverified against a live 1.18.x profile. See "Open questions" at the end.
+> Observed in the shipped 1.18.0 source: `emit(event_types.MESSAGE_RECEIVED, this.messageId, this.type)`
+> from the streaming processor, and `emit(event_types.MESSAGE_RECEIVED, chat_id, type)` from
+> the non-streaming paths — a bare integer index in both cases, which
+> [CAP-03](#CAP-03) already accepts. Still unconfirmed against a *running* profile; see
+> "Open questions" at the end.
 
 <a id="CAP-03"></a>
 ### CAP-03 — Payload normalisation accepts several shapes
@@ -452,6 +456,54 @@ prompt is still *ours* to remove, whereas an ambiguous tail is nobody's to touch
 
 Promotion requires all of: exactly one candidate, the chat at its expected length, the
 candidate at its expected index, reference identity still holding, and an assistant role.
+
+<a id="CAP-06"></a>
+### CAP-06 — A filter may only exclude on a value the host vouches for
+**Sites:** `src/generation-capture.js` › capture handler
+**Related:** [LEASE-13](#LEASE-13), [CAP-04](#CAP-04), [CAP-05](#CAP-05)
+
+`MESSAGE_RECEIVED` carries a generation type as its second argument, and capture used to
+compare `String(generationType)` against `'normal'` and drop anything else. That is the
+same mistake [LEASE-12](#LEASE-12) fixed on the end event, one file over: a payload that
+is *not demonstrably a kind* was being read as one, and a value the host never promised
+was silently deciding whether the continuation existed.
+
+The failure it produces is invisible from the outside. Drop the only candidate and the
+transaction sees zero, reports "No assistant continuation was captured", and enters
+recovery-required — a message that describes an empty generation when what actually
+happened is that the message arrived and was thrown away.
+
+So capture now shares [`classifyGenerationKind()`](#LEASE-13) with the lease, and excludes
+only when the value is a **named** kind other than the expected one. `defaulted` (absent —
+`normal` by the host's contract) and `opaque` (a value we cannot classify) are both
+admitted.
+
+Admitting more can never produce a false commit, because admission is not ownership.
+Every additional candidate still faces [CAP-05](#CAP-05), where the "exactly one" rule
+makes a second observation *fail closed* rather than open a choice. The direction of the
+error is what matters:
+
+| | old behaviour | new behaviour |
+|---|---|---|
+| Opaque type, message really ours | dropped → false recovery-required | proven structurally → commits |
+| Opaque type, message not ours | dropped → may commit the *wrong* single candidate | two candidates → refuses |
+
+The second row is the important one. Filtering on an unproven value did not merely lose
+our own message, it could also hide a foreign one that the count check exists to catch.
+
+<a id="CAP-07"></a>
+### CAP-07 — A refusal must say what it saw
+**Sites:** `src/generation-capture.js` › `evidence()`; `src/transaction.js` › `generateSuffix()`
+**Related:** [LEASE-14](#LEASE-14), [LEASE-11](#LEASE-11)
+
+"No assistant continuation was captured" has at least four distinct causes: the host
+emitted nothing, it emitted for another chat, the index did not resolve, or the event was
+set aside by kind. The user-facing text cannot carry that, and the previous build recorded
+it nowhere — so a single live occurrence was unfalsifiable after the fact.
+
+`evidence()` returns counts per reason plus the kind labels seen, logged once with the
+short transaction id when the proof fails. It follows [LEASE-14](#LEASE-14): counts, event
+names and kind labels, never message text.
 
 ---
 
@@ -535,10 +587,11 @@ carried in the receipt for diagnostics only and does not itself trigger rejectio
 baselined generation is still open at apply time, `open > 1` already catches it, and if
 it ended first it cleared the prompt *before* installation, which is harmless.
 
-`GENERATION_ENDED` carries a kind but no identity, so an end closes the most recent open
-record of the same kind, falling back to the most recent record of any kind. Two
-concurrent generations of the same kind are genuinely indistinguishable; the fallback is
-tallied as a kind mismatch rather than hidden ([LEASE-11](#LEASE-11)).
+`GENERATION_ENDED` carries no identity — on SillyTavern 1.18.0 it carries no kind either,
+only `chat.length` ([LEASE-12](#LEASE-12)). An end therefore closes the most recent open
+record, or the most recent of a matching kind on a host that names one. Two concurrent
+generations are genuinely indistinguishable; the guess is tallied rather than hidden
+([LEASE-11](#LEASE-11)).
 
 > **The trade this accepts, and its limit.** A start whose end never arrives leaves a
 > record open forever. Counting can only be wrong upward, which is the right direction —
@@ -556,10 +609,29 @@ tallied as a kind mismatch rather than hidden ([LEASE-11](#LEASE-11)).
 **Related:** [LEASE-04](#LEASE-04), [LEASE-07](#LEASE-07)
 
 `GENERATION_STOPPED` clears the prompt and the lease like any other exit path, but it
-does **not** decrement. SillyTavern emits it from `stopGeneration()` while the aborted
-`Generate()` still runs its own `finally`, so the stopped generation emits
-`GENERATION_ENDED` too. Decrementing on both would drop the count below what is actually
-running — the one direction [LEASE-04](#LEASE-04) cannot tolerate.
+does **not** decrement. A stopped generation emits `GENERATION_ENDED` as well, so
+decrementing on both would drop the count below what is actually running — the one
+direction [LEASE-04](#LEASE-04) cannot tolerate.
+
+The two arrive in the order SillyTavern happens to produce them, and that order is not
+the intuitive one. `stopGeneration()` aborts, then calls `hideStopButton()` — which *is*
+the `GENERATION_ENDED` emitter ([LEASE-12](#LEASE-12)) — and only afterwards emits
+`GENERATION_STOPPED`:
+
+```js
+if (abortController) {
+    abortController.abort('Clicked stop button');
+    hideStopButton();          // → GENERATION_ENDED
+    stopped = true;
+}
+eventSource.emit(event_types.GENERATION_STOPPED);
+```
+
+**The end precedes the stop.** When streaming is active and there is no `abortController`
+to abort, the end instead arrives later, from the unwinding generation. Neither handler
+may assume it runs second: the stop only raises `stoppedFlag`, the end only closes a
+record, and both clear the prompt idempotently. Order-independence here is deliberate, not
+incidental — it is what makes the same code correct on both paths.
 
 `CHAT_CHANGED` is the single place the records are dropped wholesale: nothing that was
 running before the chat changed can still be assembling a prompt for this one. It remains
@@ -642,8 +714,8 @@ so widening the check costs nothing.
 
 <a id="LEASE-10"></a>
 ### LEASE-10 — The host outranks our bookkeeping
-**Sites:** `src/lease.js` › `isGenerationActive()`, `reconcileWithHost()`; `src/stcontext.js` › `probeHostGeneration()`
-**Guards:** INV-11 **Related:** [HOST-06](#HOST-06), [LEASE-04](#LEASE-04), [TX-03](#TX-03)
+**Sites:** `src/lease.js` › `getGenerationSnapshot()`, `isGenerationActive()`; `src/stcontext.js` › `probeHostGeneration()`
+**Guards:** INV-11 **Related:** [HOST-06](#HOST-06), [LEASE-04](#LEASE-04), [LEASE-15](#LEASE-15), [TX-03](#TX-03)
 
 Counting events is only as good as the events. A start whose end never arrives — a
 misread dry run ([LEASE-08](#LEASE-08)), a host path that skips `GENERATION_ENDED` —
@@ -678,6 +750,32 @@ There is deliberately **no timeout-based reset**. Age is not evidence: a slow ba
 a lost event look identical, and a reset on a timer would resurrect the silent-commit
 failure on exactly the slow generations most likely to be interfered with.
 
+**One question, one answer: `getGenerationSnapshot()`.** Eligibility, the diagnostics
+report and the lease baseline used to probe the host independently. Three probes meant
+three different DOM moments, and the ordering bug that followed was not subtle: the
+diagnostics report captured the records *before* calling `isGenerationActive()`, so an
+idle report always described exactly the records that same call was about to discard. It
+reported a phantom. Everything now goes through one call that probes, reconciles and
+reports in that order, and returns what was true afterwards:
+
+```
+{ host, active, openBefore, openAfter, reconciledNow, reason }
+```
+
+`reason` is part of the contract, not decoration — `host-busy`, `host-idle-reconciled`,
+`lease-armed-records-kept`, `probe-unstable`, `observation-only`,
+`host-cannot-answer-records-decide`. A count of zero means something different in each
+case, and a report that omitted which one applied could not be acted on.
+
+**The probe is read twice and must agree with itself.** A signal that changes between two
+back-to-back reads is not evidence, so an unstable probe reconciles nothing, says
+`probe-unstable`, and falls back to the records. `reconciledNow` counts what *this* call
+dropped, separately from the cumulative `reconciledFromHostIdle`: a total cannot tell a
+user whether the report they are looking at just cleaned up after itself.
+
+`{ reconcile: false }` exists for callers that must observe without ever destroying — the
+tests use it to prove a record was there before something settled it.
+
 <a id="LEASE-11"></a>
 ### LEASE-11 — Diagnostics are part of the safety story
 **Sites:** `src/lease.js` › `getLeaseDiagnostics()`; `index.js` › `collectDiagnostics()`
@@ -686,11 +784,24 @@ failure on exactly the slow generations most likely to be interfered with.
 Every assumption this module makes about host events is unverifiable from inside the
 repository, so `/intercede diagnostics` reports what actually happened: which probe
 answered and how confidently, what is still open and for how long, and tallies of starts,
-ends, dry runs, unmatched ends, kind-mismatched ends, stops, and host reconciliations.
+ends, dry runs, unmatched ends, opaque ends, kind-mismatched ends, stops, and host
+reconciliations.
 
 The tallies are the discriminator. Dry runs climbing alongside a stuck open record points
 at [LEASE-08](#LEASE-08); unmatched ends point at a host emitting ends we never saw start;
 reconciliations climbing means the counter is leaking and the host is covering for it.
+
+The one-line toast carries only what is *abnormal* — unconfirmed records, records
+reconciled by this very call, kind mismatches, unmatched ends, a journal — and says
+`clean` when there is nothing to say. A line that always lists every counter trains the
+reader to skim it; the full report stays one keystroke away in the console.
+
+`opaqueEnds` and `kindMismatchedEnds` split a distinction that used to be conflated.
+On SillyTavern 1.18.0 **`opaqueEnds` should track `ends` almost exactly** — the host names
+no kind, so nearly every end is opaque, and that is health, not a fault
+([LEASE-12](#LEASE-12)). `kindMismatchedEnds` is now the narrow signal it was meant to be:
+a host that named a kind we have no open record for. Non-zero means a genuine
+disagreement about what is running, and is worth reporting.
 
 `parserBuild` answers a different question: **which build is actually loaded?**
 `manifest.json` sets `auto_update: false`, and a version string is reported just as
@@ -703,6 +814,177 @@ at a glance whether reference links, backslash parity, intraword emphasis, list
 continuations and blank-line paragraphs are present in the code that is answering.
 
 Bump the version too, of course. The probe is what survives forgetting to.
+
+<a id="LEASE-12"></a>
+### LEASE-12 — `GENERATION_ENDED` is an opaque completion signal
+**Sites:** `src/lease.js` › `GENERATION_KINDS`, `isRecognizedGenerationKind()`, `closeOpenGeneration()`
+**Guards:** INV-11 **Related:** [LEASE-04](#LEASE-04), [LEASE-09](#LEASE-09), [LEASE-10](#LEASE-10), [LEASE-11](#LEASE-11)
+
+Earlier revisions of this module assumed `GENERATION_ENDED` mirrored `GENERATION_STARTED`
+and carried a generation type. It does not. In SillyTavern 1.18.0 the event has exactly
+one emitter:
+
+```js
+function hideStopButton() {
+    // prevent NOOP, because hideStopButton() gets called multiple times
+    if ($('#mes_stop').css('display') !== 'none') {
+        $('#mes_stop').css({ 'display': 'none' });
+        eventSource.emit(event_types.GENERATION_ENDED, chat.length);
+    }
+}
+```
+
+Three facts follow, and each one costs something:
+
+**The payload is `chat.length`.** An integer, never a kind. Normalising it and matching it
+against open records made *every real completion* score as a kind mismatch — the tally
+[LEASE-11](#LEASE-11) relies on to mean "the host contradicted us" instead meant "a
+generation finished normally", which is the failure mode of a diagnostic that cries wolf.
+So the payload steers record selection **only when it is demonstrably a known kind**;
+anything else closes the newest open record and is tallied as `opaqueEnds`. Correctness is
+unchanged for the single-generation case and now says so, rather than arriving there
+through a mismatch fallback.
+
+The kind-matching path is kept rather than deleted: it costs one set lookup, and a host
+that does name a kind is strictly better served by it than by "newest wins".
+
+**The event is edge-triggered on the stop button, not per generation.** The NOOP guard
+means a second overlapping generation finishing while the button is already hidden emits
+*nothing*. Starts and ends therefore do not pair up under overlap, and a record can be
+left open with nothing running. This is not a bug to fix here — closing every record on an
+opaque end would manufacture the false zero [LEASE-04](#LEASE-04) exists to prevent. It is
+precisely the leak [LEASE-10](#LEASE-10) reconciles, and it is worth noting that
+`probeHostGeneration()` reads `#mes_stop` — the very state this event is derived from — so
+on this host the fallback probe and the missing event agree by construction.
+
+**A generation can end without ever having started the button.** `Generate()` emits
+`GENERATION_STARTED` before several early-return paths whose `unblockGeneration()` reaches
+a `hideStopButton()` that no-ops. Same leak, same reconciliation.
+
+> **Why this is stated as a host observation and not an interface.** None of the above is
+> promised by SillyTavern; it is what the shipped source does today. The code is written so
+> that a host which starts naming kinds, stops emitting the event, or emits it twice
+> degrades to "close the newest record" rather than to a wrong answer.
+
+<a id="LEASE-13"></a>
+### LEASE-13 — A value is only a kind when the contract says so
+**Sites:** `src/lease.js` › `classifyGenerationKind()`, `onGenerationStarted()`
+**Guards:** INV-11 **Related:** [LEASE-03](#LEASE-03), [LEASE-05](#LEASE-05), [LEASE-12](#LEASE-12), [CAP-06](#CAP-06)
+
+`GENERATION_STARTED` carries a type; `GENERATION_ENDED` does not
+([LEASE-12](#LEASE-12)). The start side needs its own rule, because the previous one —
+`String(type)`, with empty values defaulting to `normal` — turned *any* value into a kind
+by fiat. Three cases now exist, and the distinction is load-bearing:
+
+| Classification | When | Kind |
+|---|---|---|
+| `defaulted` | `undefined`, `null` or `''` | `normal` |
+| `named` | a recognized kind string | that kind |
+| `opaque` | anything else | `unknown` |
+
+**`defaulted` is not a guess.** `Generate(type)` leaves `type` undefined for an ordinary
+send, so absence *is* `normal` by the host's own contract — and it is the common path, not
+an edge case. Recording it as anything else would stop the lease attaching to the very
+generation it was armed for.
+
+**`opaque` is the safety case.** An unrecognized string, an integer, an object: nothing
+proves any of them is a generation kind. Calling one `normal` — which `String(type)`
+effectively did for unknown strings — is how a foreign generation gets mistaken for the
+intended one and silently consumes the lease. An opaque start is therefore `unknown`,
+matches no lease, and disarms: it is treated as interference, which is the direction that
+merely refuses to work rather than the one that commits the wrong reply.
+
+The three are counted separately (`namedStarts`, `defaultedStarts`, `opaqueStarts`) because
+on a supported host `opaqueStarts` should stay at zero, and a non-zero value is the first
+sign that the host contract has moved.
+
+The function is exported rather than private because `MESSAGE_RECEIVED` carries the same
+argument and assistant capture was reading it with the old `String(type)` rule — one host
+contract deserves one classifier, not two that can drift apart ([CAP-06](#CAP-06)).
+
+<a id="LEASE-14"></a>
+### LEASE-14 — Evidence without content
+**Sites:** `src/lease.js` › `describeArg()`, `logLifecycleEvent()`, `getLifecycleLog()`, `resetLeaseTallies()`; `index.js` › `collectDiagnostics()`
+**Related:** [LEASE-11](#LEASE-11), [CFG-01](#CFG-01)
+
+Cumulative tallies say *that* something went wrong, never *when* or *in what order*. Field
+reports arrived as console screenshots with ambiguous timing, and two different faults —
+a leaked start and a mis-classified end — produce similar-looking totals. So the module
+keeps a bounded ring buffer of the last 64 lifecycle events: name, argument *shapes*,
+resolved kind, sequence, open counts before and after, host state, whether a lease was
+armed.
+
+**It records no content, by construction rather than by care.** A string argument is
+reproduced only when it is at most 24 characters *and* matches `/^[\w-]+$/` — `quiet`
+survives, a prompt or a line of dialogue cannot, because prose contains spaces and
+punctuation. Objects contribute key names only: `quiet_prompt` is a key, and its value is
+the user's text.
+
+**Collection is always on; `debugLifecycle` controls exposure only.** A buffer you have to
+switch on before the fault occurs is empty in exactly the session that needed it — the
+live diagnostics this release was built from would have carried nothing. Because the
+redaction happens at the point of capture, always-on costs nothing that gating would have
+protected: there is no state in which the buffer holds content that the setting would have
+kept out of it. The setting decides whether `collectDiagnostics()` embeds the log in the
+pasted report; `Intercede.lifecycleLog()` reads it either way, and `resetLeaseTallies()`
+empties it.
+
+`resetLeaseTallies()` clears counters and the buffer and **nothing else**. Open records,
+the lease, the audit, the stop flag and the start sequence all survive, because a
+transaction in flight reads every one of them — a "reset" that cleared open records would
+be an undocumented way to fake the all-clear this rule exists to make honest.
+
+<a id="LEASE-15"></a>
+### LEASE-15 — Starts that never became generations
+**Sites:** `src/lease.js` › `onGenerationAfterCommands()`, `armLease()`; `initLease()`
+**Guards:** INV-11 **Related:** [LEASE-04](#LEASE-04), [LEASE-10](#LEASE-10), [LEASE-12](#LEASE-12)
+
+Typing a slash command into the composer runs a **generation** in SillyTavern. `Generate()`
+emits the start before it knows the command will cancel it, and its own source says so:
+
+```js
+// Occurs every time, even if the generation is aborted due to slash commands execution
+await eventSource.emit(event_types.GENERATION_STARTED, type, {...}, dryRun);
+
+if (!(dryRun || depth || type == 'regenerate' || type == 'swipe' || type == 'quiet')) {
+    const interruptedByCommand = await processCommands(String($('#send_textarea').val()));
+    if (interruptedByCommand) {
+        unblockGeneration(type);
+        return Promise.resolve();
+    }
+}
+
+// Occurs only if the generation is not aborted due to slash commands execution
+await eventSource.emit(event_types.GENERATION_AFTER_COMMANDS, type, {...}, dryRun);
+```
+
+That early return reaches `hideStopButton()` through `unblockGeneration()`, but the stop
+button was never shown — `deactivateSendButtons()` is still dozens of lines ahead — so the
+NOOP guard fires and **no `GENERATION_ENDED` is emitted** ([LEASE-12](#LEASE-12)). Every
+`/intercede …` typed in the composer therefore leaves one `normal` record open forever.
+
+This produced the symptom that blocked the release: an open count that climbed by one per
+`/intercede diagnostics`, each invocation leaking its own start and then reporting it.
+
+**Two things follow, and only one of them is about reporting.**
+
+`GENERATION_AFTER_COMMANDS` marks a record `confirmed`. It closes nothing and decides
+nothing — it *labels*, so an abandoned start is nameable in diagnostics instead of looking
+like a lost end. Hosts that never emit it simply leave records unconfirmed, which is where
+this started.
+
+The real defect was in `armLease()`. A leaked record sat in `baselineOpenGenerations`, and
+the apply-time `open > 1` check then read it as a concurrent generation and set
+`promptIntegrityLost` — rejecting a perfectly good intercession because the user had once
+typed a slash command. `armLease()` now reconciles ([LEASE-10](#LEASE-10)) immediately
+before taking the baseline, in the one window where dropping records is safe: no lease is
+armed yet, so there is no interference decision to corrupt.
+
+> **What is deliberately not done.** An unconfirmed record is *not* closed on its own
+> evidence. "Unconfirmed" and "still inside `processCommands()`" are indistinguishable, and
+> a slash command can itself start a generation — so dropping unconfirmed records while a
+> lease is armed would reopen [LEASE-05](#LEASE-05) on the silent-commit side. Only the
+> host may settle it, and only when no lease depends on the answer.
 
 ---
 
@@ -749,6 +1031,31 @@ and a transformation there is only a warning.
 A Sørensen–Dice coefficient over word trigrams, as a rounded percentage. This measures
 textual overlap only — it is **not** a claim about semantic fidelity, and should never be
 presented as one.
+
+<a id="VAL-05"></a>
+### VAL-05 — A warning nobody can act on costs more than it catches
+**Sites:** `src/validator.js` › `META_COMMENTARY_PATTERNS`, `describeMetaCommentary()`
+**Related:** [VAL-01](#VAL-01), [TX-16](#TX-16)
+
+The meta-commentary check is advisory: it warns, it never rolls back, and it never edits
+prose. That makes its false-positive rate the only thing that decides whether it is worth
+having — an amber toast on a perfectly good continuation teaches the user to dismiss the
+next one unread.
+
+Two patterns were removed for firing on ordinary in-character text:
+
+- `per your instructions` — everyday dialogue (*"Per your instructions, my lord."*);
+- `original draft` — everyday narration in any scene containing a writer.
+
+What remains is either the prompt's own vocabulary (`scene notes`, `planning material` —
+words that only appear in the output if the instruction leaked) or a register no character
+speaks (`as an AI`, *"I have rewritten the passage"*).
+
+The wording changed too. "May contain meta-commentary about the rewrite" reads as damage;
+the continuation is committed and intact, and what is being asked for is a read-through.
+
+`describeMetaCommentary()` returns the matching pattern's **label**, which is what the
+console line and any future diagnostics field carry. The matched prose stays out of both.
 
 ---
 
@@ -971,8 +1278,21 @@ Returns `busy`, `idle`, or `unknown`, plus the probe that answered and how much 
 |---|---|---|
 | `ctx.isGenerating` (boolean) | strong | strong |
 | `ctx.streamingProcessor` with `isFinished === false` | strong | — |
+| `document.body.dataset.generating` present | strong | — |
 | `#mes_stop` visible | strong | weak |
 | nothing present | `unknown` | `unknown` |
+
+`document.body.dataset.generating` is SillyTavern's own generating flag:
+`deactivateSendButtons()` sets it for every non-dry-run generation and
+`activateSendButtons()` deletes it. It is consulted for **busy only**, deliberately. Its
+*absence* is not an idle answer, because a host that never sets the flag is
+indistinguishable from one that has finished — reading absence as idle would silently
+convert "I have never heard of this host" into "nothing is running", which is exactly the
+false zero [LEASE-04](#LEASE-04) forbids.
+
+Each probe value is read **once** per answer. The host may expose these as accessors, and
+a probe that reads a live value twice can contradict itself inside a single answer —
+see the stability check in [LEASE-10](#LEASE-10).
 
 **Confidence is asymmetric, and that asymmetry is the whole design.** A visible stop
 button proves a generation is running. A hidden one proves only that no *user-facing*
@@ -1508,6 +1828,30 @@ slash-command-only.
 | `RecoveryRequiredError` | Ownership can no longer be proven. Nothing is deleted, evidence (journal + vault) is preserved, and the user is asked to decide |
 | `PreflightError` | Nothing was mutated, so there is nothing to undo |
 
+<a id="ERR-02"></a>
+### ERR-02 — One failure, one authoritative notice
+**Sites:** `src/transaction.js` › `enterRecoveryRequired()`, `userWasNotified`;
+`src/ui/commit-flow.js` › the `catch`
+**Related:** [ERR-01](#ERR-01), [TX-11](#TX-11), [TX-10](#TX-10)
+
+A `RecoveryRequiredError` used to produce two toasts that disagreed. `enterRecoveryRequired()`
+said the chat had been left alone and recovery was available; the caller's blanket `catch`
+then said the intercession *"failed and was rolled back"*. Only the first was true — the
+recovery-required path deliberately does **not** roll back — and the second arrived on top
+of it.
+
+Believing the wrong toast is not cosmetic. It says the original message is already back
+when it is still cut, and it discourages the one command that would restore it.
+
+The transaction is the only party that knows how it ended, so it owns the notice:
+`userWasNotified` is set by the terminal paths that speak for themselves — recovery-required
+and the chat-changed branch of [TX-10](#TX-10) — and the caller adds its own message only
+when nothing has been said. The caller still logs, with the short transaction id, always.
+
+The recovery notice also stopped offering `/intercede recover` unconditionally. It is
+offered when a journal for *this* transaction actually remains; otherwise there is nothing
+for recover to read, and pointing at it would be a third wrong instruction.
+
 <a id="CFG-01"></a>
 ### CFG-01 — Snapshots are kept indefinitely by default
 **Sites:** `src/constants.js` › `DEFAULT_SETTINGS.snapshotTtlDays`
@@ -1576,25 +1920,72 @@ filters do not mistake it for output-reuse.
 
 # Open questions
 
-Things this document asserts that have **not** been verified against a live SillyTavern
-1.18.x profile. Each is a place where a wrong assumption would matter.
+Things this document asserts that are not established by the test suite, which runs against
+a simulated host. Each is a place where a wrong assumption would matter.
 
-1. **[CAP-02](#CAP-02) — assistant-message event payload.** The capture adapter accepts an integer
-   id, an object with `messageId`/`index`, or a message object. If 1.18.x passes something
-   else, capture observes nothing and every intercession fails closed. Fix the adapter,
-   record the real shape in tests, and do not loosen [CAP-05](#CAP-05).
+**Two kinds of evidence are distinguished below.** *Read* means confirmed against the
+shipped SillyTavern 1.18.0 source — strong, but it is still only what the code says.
+*Unverified* means neither read nor run. Nothing here has been confirmed against a
+**running** profile, which remains a separate gate: a read of the source cannot show what
+a particular backend, a streaming path, or another installed extension actually does.
 
-2. **[LEASE-05](#LEASE-05) — nested generation ordering.** The nested-quiet failure depends on
-   SillyTavern awaiting `GENERATION_STARTED` before assembling extension prompts. The
-   regression tests encode that model rather than prove it. If the host does not behave
-   that way, the guards are harmless but the path was never reachable.
+1. **[CAP-02](#CAP-02) — assistant-message event payload. Read; index confirmed running.**
+   1.18.0 emits `MESSAGE_RECEIVED` with a bare integer index (plus a type argument), from
+   both the streaming processor and the non-streaming paths. [CAP-03](#CAP-03) accepts it,
+   and a live intercession has now committed against a real backend, which the index shape
+   could not have survived if it were wrong.
 
-3. **[LEASE-04](#LEASE-04) — unpaired `GENERATION_ENDED`.** Nothing bounds drift any more: the count
-   is authoritative and only `CHAT_CHANGED` resets it. A start whose end never arrives
-   makes the extension refuse every intercession until the chat changes or the page
-   reloads. Loud and recoverable by construction, but worth watching for in practice.
+   The *type* argument is a different matter and is **unverified**: no live report has ever
+   recorded what it actually holds on the path Intercede uses. Capture no longer depends on
+   the answer ([CAP-06](#CAP-06)) — that is the point of the change — but a build that
+   passes something unexpected still deserves a look at `evidence().kinds`, where an
+   `opaque` count is the tell.
 
-4. **[LEASE-09](#LEASE-09) — stop emits both events.** The count assumes `GENERATION_STOPPED` is
-   always followed by that generation's own `GENERATION_ENDED`. If some backend's abort
-   path skips the end, pressing stop leaks the count upward — see question 3 for what
-   that feels like. Worth exercising the stop button on each backend.
+2. **[LEASE-05](#LEASE-05) — nested generation ordering. Read.** `Generate()` awaits
+   `GENERATION_STARTED` near its top, and extension prompts are collected much later,
+   during prompt assembly. The nested-generation window the guards defend is therefore
+   real, not merely modelled. What the source cannot show is how often another extension
+   actually generates from that listener.
+
+3. **[LEASE-04](#LEASE-04) — unpaired `GENERATION_ENDED`. Read; answered.**
+   This is no longer a question, and the answer turned out to have two halves.
+   `GENERATION_ENDED` is emitted only by `hideStopButton()`, which no-ops when the button
+   is already hidden ([LEASE-12](#LEASE-12)), so overlapping generations produce fewer ends
+   than starts. Separately, a composer slash command emits a start and aborts before the
+   button is ever shown ([LEASE-15](#LEASE-15)) — that one was observed in the field as an
+   open count climbing by one per `/intercede diagnostics`. The count drifts upward by
+   design; [LEASE-10](#LEASE-10) reconciles it, and `armLease()` now does so before taking
+   its baseline so the drift cannot be read as an overlap. What remains open is only
+   whether reconciliation fires promptly enough in practice — watch `reconciledNow`,
+   `reconciledUnconfirmed` and `unconfirmedOpen` in diagnostics.
+
+4. **[LEASE-09](#LEASE-09) — stop emits both events. Read.** `stopGeneration()` calls
+   `hideStopButton()` and then emits `GENERATION_STOPPED`, so on this path the end
+   *precedes* the stop. Both handlers are order-independent. The remaining risk is a
+   backend whose abort leaves the stop button already hidden, in which case no end is
+   emitted at all — question 3's leak, reached by pressing stop. Worth exercising the stop
+   button on each backend.
+
+5. **Live-host behaviour generally. Partly run.** The suite drives a jsdom fake. One live
+   session on 1.18.0 has now exercised idle and repeated composer diagnostics, an ordinary
+   commit, and a deliberate quiet overlap — all passing, recorded in
+   [RELEASE-TESTS.md](RELEASE-TESTS.md). Streaming, cancellation, undo, repeated use,
+   display regexes and other extensions remain unrun. Treat a green suite as necessary,
+   not sufficient.
+
+6. **A single unreproduced capture failure. Unverified.** One intercession in that session
+   failed with "No assistant continuation was captured", after a run of interference
+   testing, and did not recur. Three explanations remain open: the host produced no message
+   because the probe had left it in an odd state (in which case failing closed was correct),
+   the message was discarded by the kind filter ([CAP-06](#CAP-06), now removed as a
+   possibility), or something in the capture window that nothing recorded. Only the second
+   is closed. [CAP-07](#CAP-07) exists so a recurrence arrives with evidence instead of a
+   third round of speculation — the ten-intercession row is where to watch for it.
+
+7. **`body.dataset.generating` never answered. Read; contradicted in the field.** The probe
+   chain in [HOST-06](#HOST-06) expects it as the strong middle answer, but every live
+   report so far reads `#mes_stop (weak)`, meaning neither `ctx.isGenerating` nor the
+   dataset flag produced anything on that build. Nothing failed as a result, and the
+   busy-only reading means a flag that never appears costs nothing. It does mean the
+   weakest source is carrying every eligibility decision in practice, which is the real
+   reason non-streaming cancellation is still the row most worth walking.

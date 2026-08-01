@@ -239,7 +239,7 @@ describe('non-matching generation interleaves after the instruction is installed
 
     for (const kind of ['quiet', 'impersonate', 'continue']) {
         it(`rolls back when a nested ${kind} generation strips the instruction`, async () => {
-            const { ctx, transaction } = await setup();
+            const { ctx, transaction, lease, vault } = await setup();
             ctx.generate = vi.fn(nestedGeneration(ctx, kind));
 
             await expect(runTransaction(transaction, { ctx, offset: CUT_OFFSET }))
@@ -251,6 +251,21 @@ describe('non-matching generation interleaves after the instruction is installed
             expect(ctx.chat.some(m => getIntercedeMarker(m))).toBe(false);
             expect(Object.keys(ctx.chatMetadata?.intercede?.transactions ?? {})).toHaveLength(0);
             expect(transaction.isRecoveryRequired()).toBe(false);
+
+            // Nothing is left armed, journalled or installed.
+            expect(lease.isLeaseArmed()).toBe(false);
+            expect(ctx.setExtensionPrompt.mock.calls.at(-1)?.[1]).toBe('');
+            expect(vault.readJournal()).toBeNull();
+
+            // And the bookkeeping settles: the host is idle, so nothing is left open.
+            ctx.isGenerating = false;
+            expect(lease.getLeaseDiagnostics().openCount).toBe(0);
+
+            // The instruction must not reach whatever generates next.
+            ctx.setExtensionPrompt.mockClear();
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, undefined, {}, false);
+            const installed = ctx.setExtensionPrompt.mock.calls.map(call => call[1]).filter(Boolean);
+            expect(installed).toEqual([]);
         });
     }
 

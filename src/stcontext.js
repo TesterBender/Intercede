@@ -118,9 +118,12 @@ export function saveSettings(ctx = getCtx()) {
  * @returns {{ state: 'busy'|'idle'|'unknown', source: string, confidence: 'strong'|'weak'|'none' }}
  */
 export function probeHostGeneration(ctx = getCtx()) {
-    if (typeof ctx?.isGenerating === 'boolean') {
+    // Read once. The host may expose this as an accessor, and probing a live
+    // value twice in one answer is how a probe contradicts itself.
+    const hostFlag = ctx?.isGenerating;
+    if (typeof hostFlag === 'boolean') {
         return {
-            state: ctx.isGenerating ? 'busy' : 'idle',
+            state: hostFlag ? 'busy' : 'idle',
             source: 'ctx.isGenerating',
             confidence: 'strong',
         };
@@ -129,6 +132,16 @@ export function probeHostGeneration(ctx = getCtx()) {
     const streaming = ctx?.streamingProcessor;
     if (streaming && streaming.isFinished === false) {
         return { state: 'busy', source: 'ctx.streamingProcessor', confidence: 'strong' };
+    }
+
+    // SillyTavern's own generating flag: `deactivateSendButtons()` sets it for
+    // every non-dry-run generation, `activateSendButtons()` deletes it. Consulted
+    // for *busy* only. Its absence proves nothing — a host that never sets the
+    // flag is indistinguishable from one that is idle — so the idle answer is
+    // still left to `#mes_stop` below. @see docs/RATIONALE.md#HOST-06
+    const body = typeof document !== 'undefined' ? document.body : null;
+    if (body?.dataset && 'generating' in body.dataset) {
+        return { state: 'busy', source: 'body.dataset.generating', confidence: 'strong' };
     }
 
     const stopButton = typeof document !== 'undefined'

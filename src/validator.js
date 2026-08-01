@@ -104,10 +104,37 @@ export function detectInsertionEcho(insertion, generated) {
     return head.includes(insertionNorm);
 }
 
-const META_COMMENTARY_REGEX = /\b(scene[ _]notes|discarded[ _]suffix|editorial reference|original draft|planning material|as an ai\b|the user'?s? insertion|per your instructions?|rewritten continuation)\b/i;
+/**
+ * Phrases that only make sense as the model talking *about* the rewrite.
+ * Entries are added and removed by false-positive cost. @see docs/RATIONALE.md#VAL-05
+ */
+const META_COMMENTARY_PATTERNS = [
+    // The prompt's own vocabulary — a leak echoes these words back.
+    ['scene-notes', /\bscene[ _]notes\b/i],
+    ['planning-material', /\bplanning material\b/i],
+    ['discarded-suffix', /\bdiscarded[ _]suffix\b/i],
+    ['editorial-reference', /\beditorial reference\b/i],
+    ['rewritten-continuation', /\brewritten continuation\b/i],
+    ['user-insertion', /\bthe user'?s? insertion\b/i],
+    // Assistant register, which no character speaks.
+    ['as-an-ai', /\bas an ai\b/i],
+    ['first-person-rewrite', /\bi(?: have|'ve)? (?:rewritten|revised|regenerated|continued) (?:the|this|your) (?:continuation|passage|scene|message|response)\b/i],
+];
+
+/**
+ * Which pattern matched, or null. The label travels; the prose never does.
+ * @see docs/RATIONALE.md#VAL-05
+ */
+export function describeMetaCommentary(generated) {
+    const text = String(generated ?? '');
+    for (const [label, pattern] of META_COMMENTARY_PATTERNS) {
+        if (pattern.test(text)) return label;
+    }
+    return null;
+}
 
 export function detectMetaCommentary(generated) {
-    return META_COMMENTARY_REGEX.test(generated);
+    return describeMetaCommentary(generated) !== null;
 }
 
 function wordTrigrams(text) {
@@ -147,8 +174,10 @@ export function qualityWarnings({ prefix, insertion, suffix, generated, mode }) 
     if (detectInsertionEcho(insertion, generated)) {
         warnings.push('The continuation appears to repeat your inserted response.');
     }
-    if (detectMetaCommentary(generated)) {
-        warnings.push('The continuation may contain meta-commentary about the rewrite.');
+    // Advisory, never a reason to roll back. @see docs/RATIONALE.md#VAL-05
+    const meta = describeMetaCommentary(generated);
+    if (meta) {
+        warnings.push('Worth re-reading — the continuation may step outside the scene to talk about the rewrite.');
     }
 
     const preservation = computePreservation(suffix, generated);
@@ -162,5 +191,6 @@ export function qualityWarnings({ prefix, insertion, suffix, generated, mode }) 
         }
     }
 
-    return { warnings, preservation };
+    // `meta` is a pattern label, not an excerpt — safe for a bug report.
+    return { warnings, preservation, meta };
 }

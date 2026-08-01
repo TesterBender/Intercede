@@ -8,8 +8,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # v5 of both actions bundles Node 24; v4 bundled the deprecated Node 20
+      # and warned on every run.
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           # 24, because the runner forces it anyway now that 20 is deprecated —
           # pinning a version the run cannot honour proves nothing.
