@@ -134,12 +134,14 @@ function collectDiagnostics() {
 
 function describeDiagnostics(report) {
     const { hostSays, openGenerations, generationActive } = report.eligibility;
-    const { unmatchedEnds, dryRuns, starts, ends } = report.lease.events;
+    const { unmatchedEnds, kindMismatchedEnds, dryRuns, starts, ends } = report.lease.events;
     return [
         `generation ${generationActive ? 'ACTIVE' : 'idle'}`,
         `host ${hostSays.state} via ${hostSays.source}`,
         `${openGenerations} open`,
-        `${starts} starts / ${ends} ends / ${dryRuns} dry runs / ${unmatchedEnds} unmatched ends`,
+        // Kind mismatches belong on the pasted line: on a host that names no kind
+        // they should stay at zero. @see docs/RATIONALE.md#LEASE-12
+        `${starts} starts / ${ends} ends / ${dryRuns} dry runs / ${unmatchedEnds} unmatched ends / ${kindMismatchedEnds} kind mismatches`,
         'full report in the browser console',
     ].join(' — ');
 }

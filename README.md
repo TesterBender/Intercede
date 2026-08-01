@@ -195,6 +195,10 @@ still "succeed". The event name and payload used to capture the generated contin
 the only version-coupled assumption; they live in `src/generation-capture.js` and are
 recorded in the tests.
 
+A green suite is necessary but not sufficient — it cannot exercise a real backend,
+streaming, or another installed extension. Releases also walk the live matrix in
+**[docs/RELEASE-QA.md](docs/RELEASE-QA.md)**.
+
 ## Why the code does what it does
 
 The reasoning behind every non-obvious decision lives in **[docs/RATIONALE.md](docs/RATIONALE.md)**,
@@ -238,3 +242,7 @@ src/ui/modal.js              self-contained confirm/modal dialogs
 src/ui/compare.js            original vs. revised comparison view
 src/ui/settings.js           settings drawer
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -31,9 +31,35 @@ const tallies = {
     ends: 0,
     unmatchedEnds: 0,
     kindMismatchedEnds: 0,
+    opaqueEnds: 0,
     reconciledFromHostIdle: 0,
     stops: 0,
 };
+
+/**
+ * Generation types SillyTavern's `Generate()` dispatches on.
+ * `GENERATION_STARTED` carries one of these (or nothing, meaning `normal`).
+ * @see docs/RATIONALE.md#LEASE-12
+ */
+const GENERATION_KINDS = new Set([
+    'normal',
+    'quiet',
+    'impersonate',
+    'continue',
+    'swipe',
+    'regenerate',
+]);
+
+/**
+ * Does this end payload actually name a generation type?
+ *
+ * On SillyTavern 1.18.0 it never does — `GENERATION_ENDED` carries `chat.length`.
+ * Only a payload that is demonstrably a known kind may steer record selection.
+ * @see docs/RATIONALE.md#LEASE-12
+ */
+function isRecognizedGenerationKind(payload) {
+    return typeof payload === 'string' && GENERATION_KINDS.has(payload);
+}
 
 function openCount() {
     return openGenerations.length;
@@ -265,33 +291,44 @@ async function onGenerationStarted(type, ...rest) {
 
 /**
  * Close the open record this end most plausibly belongs to.
- * @see docs/RATIONALE.md#LEASE-04 — the event names a kind, never an identity
+ *
+ * The payload is treated as opaque unless it is demonstrably a generation kind
+ * ([LEASE-12](docs/RATIONALE.md#LEASE-12)); on SillyTavern 1.18.0 it is `chat.length`.
+ * Either way exactly one record closes, so the count can only ever be wrong
+ * upward — the direction [LEASE-04](docs/RATIONALE.md#LEASE-04) requires.
+ *
+ * @see docs/RATIONALE.md#LEASE-04 — the event never names an identity
  */
-function closeOpenGeneration(type) {
+function closeOpenGeneration(payload) {
     tallies.ends += 1;
     if (!openGenerations.length) {
         tallies.unmatchedEnds += 1;
         return;
     }
-    const kind = normalizeType(type);
+
     let index = -1;
-    for (let i = openGenerations.length - 1; i >= 0; i--) {
-        if (openGenerations[i].kind === kind) { index = i; break; }
+    if (isRecognizedGenerationKind(payload)) {
+        for (let i = openGenerations.length - 1; i >= 0; i--) {
+            if (openGenerations[i].kind === payload) { index = i; break; }
+        }
+        // A named kind that matches nothing open is a real inconsistency.
+        if (index === -1) tallies.kindMismatchedEnds += 1;
+    } else {
+        // The host said "a generation finished" without saying which.
+        tallies.opaqueEnds += 1;
     }
-    if (index === -1) {
-        tallies.kindMismatchedEnds += 1;
-        index = openGenerations.length - 1;
-    }
+
+    if (index === -1) index = openGenerations.length - 1;
     openGenerations.splice(index, 1);
 }
 
-function onGenerationEnded(type) {
-    closeOpenGeneration(type);
+function onGenerationEnded(payload) {
+    closeOpenGeneration(payload);
     if (currentLease) currentLease = null;
     clearPrompt();
 }
 
-/** @see docs/RATIONALE.md#LEASE-09 — a stop does not close a record; its end does */
+/** @see docs/RATIONALE.md#LEASE-09 — a stop does not close a record; the end does */
 function onGenerationStopped() {
     tallies.stops += 1;
     stoppedFlag = true;

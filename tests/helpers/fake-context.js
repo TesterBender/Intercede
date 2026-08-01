@@ -230,12 +230,37 @@ export async function runTransaction(transactionModule, { ctx, targetIndex = ctx
 }
 
 /**
+ * Emit `GENERATION_ENDED` the way the host does.
+ *
+ * SillyTavern 1.18.0 emits it from `hideStopButton()` carrying `chat.length` —
+ * an integer, never a generation type. Tests that need the event to name a kind
+ * must pass one explicitly, and should say why.
+ */
+export function emitHostGenerationEnded(ctx) {
+    return ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, ctx.chat.length);
+}
+
+/**
+ * Emit the sequence `stopGeneration()` produces.
+ *
+ * `stopGeneration()` calls `hideStopButton()` — which emits GENERATION_ENDED —
+ * and only then emits GENERATION_STOPPED. The end precedes the stop.
+ */
+export async function emitHostStop(ctx) {
+    await emitHostGenerationEnded(ctx);
+    await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STOPPED);
+}
+
+/**
  * Simulate SillyTavern producing an assistant reply during `generate()`:
  * fires GENERATION_STARTED, appends the message, fires MESSAGE_RECEIVED and
  * GENERATION_ENDED in the order a real backend does.
+ *
+ * `endPayload` defaults to the host-realistic `chat.length`; pass a kind only to
+ * model a host that names one.
  */
 export function respondWith(ctx, text, options = {}) {
-    const { kind = 'normal', extraMessages = [], emitReceived = true } = options;
+    const { kind = 'normal', extraMessages = [], emitReceived = true, endPayload } = options;
     return async () => {
         await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STARTED, kind, {}, false);
 
@@ -250,7 +275,11 @@ export function respondWith(ctx, text, options = {}) {
             ctx.chat.push(extra);
         }
 
-        await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, kind);
+        if (endPayload === undefined) {
+            await emitHostGenerationEnded(ctx);
+        } else {
+            await ctx.eventSource.emit(ctx.eventTypes.GENERATION_ENDED, endPayload);
+        }
         return generated;
     };
 }
