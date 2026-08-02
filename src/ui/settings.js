@@ -166,11 +166,7 @@ export function initSettingsPanel() {
         });
     };
 
-    /**
-     * Saved on `input` behind a debounce so a long template is not written to
-     * settings on every keystroke, and again on `change` so a blur commits
-     * immediately rather than 300ms later.
-     */
+    /** Debounced on `input` so a long template is not saved per keystroke; `change` commits at once. */
     const bindTextarea = (id, key, onChange) => {
         const area = byId(id);
         area.value = String(settings[key] ?? '');
@@ -223,9 +219,8 @@ export function initSettingsPanel() {
 }
 
 /**
- * The Prompt section. Options are appended before `bindSelect` reads the stored
- * value — a `select` silently refuses a value it has no option for, which would
- * present a customised install as though it were on the default.
+ * The Prompt section. Options are appended before `bindSelect` reads the stored value.
+ * @see docs/RATIONALE.md#UI-13 why that order is load-bearing
  */
 function initPromptControls({ byId, bindSelect, bindTextarea }) {
     const select = byId('intercede_prompt_preset');
@@ -268,11 +263,7 @@ function promptOption(value, label) {
 
 /**
  * Re-render everything downstream of the prompt fields.
- *
- * The resolved text is shown as each box's `placeholder`, never as its `value`:
- * an empty box has to read as "using this", because storing the default text as
- * a value would freeze it — a later release could not improve the wording for
- * anyone who had ever opened the drawer.
+ * @see docs/RATIONALE.md#CFG-04 why resolved text is a `placeholder`, never a `value`
  */
 function refreshPromptView(byId) {
     const settings = getSettings();
@@ -290,8 +281,7 @@ function refreshPromptView(byId) {
     warning.textContent = notice ?? '';
     warning.hidden = !notice;
 
-    // Editing a template blind is how this feature goes wrong; the preview is
-    // what makes a mistyped placeholder visible before a generation spends it.
+    // Makes a mistyped placeholder visible before a generation spends it.
     byId('intercede_prompt_preview').textContent = buildRewritePrompt({
         suffix: PREVIEW_SAMPLE,
         mode: settings.defaultMode,

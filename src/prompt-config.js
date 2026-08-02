@@ -1,12 +1,8 @@
 /**
  * Resolves the active rewrite instruction from settings.
  *
- * The one rule everything here follows: **an empty field means "use the built-in
- * text", never "send an empty prompt"**. A user who clears a textarea has said
- * "go back to the default", and a template that cannot work is not used at all.
- *
  * @see docs/RATIONALE.md#PROMPT-02 why resolution lives here and not in prompt.js
- * @see docs/RATIONALE.md#CFG-04 the flat keys and the empty-string rule
+ * @see docs/RATIONALE.md#CFG-04 the flat keys, and why empty means default
  */
 
 import { PROMPT_PRESETS, REWRITE_MODES } from './constants.js';
@@ -50,8 +46,7 @@ export function describeTemplateFallback(settings) {
  */
 export function resolvePromptConfig(settings = getSettings()) {
     const requested = settings?.promptPreset;
-    // An unknown id — a preset removed in a later version, say — is not a reason
-    // to fail; it resolves to the default the same as a fresh install would.
+    // An unknown id (a preset retired in a later version) resolves to the default.
     const known = requested === PROMPT_PRESETS.CUSTOM
         || Object.hasOwn(BUILT_IN_PRESETS, String(requested));
     const presetId = known ? requested : DEFAULT_PRESET.id;

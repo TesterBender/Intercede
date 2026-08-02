@@ -1034,8 +1034,8 @@ presented as one.
 
 <a id="VAL-05"></a>
 ### VAL-05 — A warning nobody can act on costs more than it catches
-**Sites:** `src/validator.js` › `META_COMMENTARY_PATTERNS`, `describeMetaCommentary()`
-**Related:** [VAL-01](#VAL-01), [TX-16](#TX-16)
+**Sites:** `src/validator.js` › `META_COMMENTARY_PATTERNS`, `wrapperTagPattern()`, `describeMetaCommentary()`
+**Related:** [VAL-01](#VAL-01), [TX-16](#TX-16), [PROMPT-02](#PROMPT-02)
 
 The meta-commentary check is advisory: it warns, it never rolls back, and it never edits
 prose. That makes its false-positive rate the only thing that decides whether it is worth
@@ -1056,6 +1056,17 @@ the continuation is committed and intact, and what is being asked for is a read-
 
 `describeMetaCommentary()` returns the matching pattern's **label**, which is what the
 console line and any future diagnostics field carry. The matched prose stays out of both.
+
+Since v0.7.0 the list is joined by one derived pattern: the container name of the template
+actually in use ([PROMPT-02](#PROMPT-02)), matched under the label `wrapper-tag`. The fixed
+list above is the *default* prompt's vocabulary, and a user-authored template need never use
+those words — the check would quietly stop catching the leak it is best at, the model naming
+the container back, while still appearing to work.
+
+The same false-positive arithmetic bounds it. A container of one short word — `notes`,
+`plan` — fires on ordinary prose (*"She left notes across the table"* is already a pinned
+non-match), so a single word under six characters derives no pattern at all. Missing a leak
+costs a warning nobody sees; inventing one costs the credibility of every warning after it.
 
 ---
 
@@ -1976,6 +1987,12 @@ Editing a template while a generation is in flight cannot alter the instruction 
 generation is running under, and the swipe re-lease path ([LEASE-06](#LEASE-06)) rebuilds from
 the same resolver rather than from a second copy of the default.
 
+The diagnostics report carries the preset id and a `customized` flag, and **never the prompt
+text**. "My regenerations got strange" is answered first by knowing whether the instruction
+was edited at all, so the report should answer it without a round trip — but a report exists
+to be pasted into a public issue, and a user's own template is not something to publish on
+their behalf.
+
 Two things follow from the container name no longer being a constant. `sanitizeSuffix()`
 reads the wrapper tag out of the active template, because the container that needs defending
 is whichever one the template actually opened — while still defanging `scene_notes`, which
@@ -1986,6 +2003,45 @@ at — the model naming the container back.
 
 Interpolation is `split`/`join`, not `replace`. The suffix is chat text, and `$&` or `$'`
 inside it would be expanded as a replacement pattern.
+
+<a id="PROMPT-03"></a>
+### PROMPT-03 — Substituted values are data, never template source
+**Sites:** `src/prompt.js` › `buildRewritePrompt()`, `getWrapperTags()`
+**Related:** [PROMPT-02](#PROMPT-02)
+
+Placeholder resolution applies only to text the template author wrote. Everything
+substituted *into* the template — the suffix, the mode wording — is data, and data is never
+scanned for placeholders.
+
+This was got wrong once, and the failure is instructive. The first implementation
+interpolated `{{suffix}}` and then searched the **assembled body** for `{{mode}}`. A
+continuation containing the literal text `{{mode}}` — a card game, a code sample, a chat
+about this extension — therefore had the mode wording spliced into the middle of a sentence.
+The user's own words were being executed as template syntax.
+
+The fix is an ordering one, not a filtering one: split the template on `{{suffix}}` **first**,
+resolve `{{mode}}` inside each resulting fragment, and only then join the sanitised suffix
+between them. Placeholders in the suffix are never reachable because the suffix is never part
+of a string that gets split, and placeholders in the addendum are never reachable because
+`join()` does not rescan what it inserts. Escaping the suffix would have been the weaker
+answer — it makes the prompt lie about what the character actually wrote.
+
+Two consequences worth stating, because both are easy to reintroduce:
+
+- **Whether to append the addendum is decided from the template**, not from the assembled
+  body. Reading it back off the result would let a suffix containing `{{mode}}` suppress the
+  append, or add a second copy.
+- **Every marker gets its container defended, not just the first.** A template may carry more
+  than one `{{suffix}}`, and they need not share a wrapper. `getWrapperTags()` collects all of
+  them — deduplicated case-insensitively, and always including `scene_notes` — so a suffix
+  that closes the *second* container is defanged too. `getWrapperTag()` remains as the
+  single-value form for the diagnostics field and the [VAL-05](#VAL-05) heuristic.
+
+Defanging is the one exception to "the suffix is inserted unaltered", and it is the only
+`String.replace` left on this path. It is safe because its *replacement* is a literal with no
+`$` in it; the text being scanned is chat prose, which is exactly where a stray `$&` comes
+from. Any future edit that makes that replacement dynamic reintroduces the bug this rule
+exists to prevent.
 
 ---
 

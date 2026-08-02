@@ -145,10 +145,7 @@ function collectDiagnostics() {
             ? getLifecycleLog()
             : 'not included — Intercede.setDebugLifecycle(true), or read it now with Intercede.lifecycleLog()',
         journal: readJournal(),
-        // Which instruction this install is actually sending. The first question
-        // behind "my regenerations got strange" is whether the prompt was edited,
-        // and the report should answer it without a round trip. The text itself
-        // never travels — reports get pasted into public issues.
+        // Which instruction this install sends — never its text.
         // @see docs/RATIONALE.md#PROMPT-02
         prompt: (() => {
             const { presetId, customized, fallback } = resolvePromptConfig();

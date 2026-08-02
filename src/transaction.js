@@ -514,9 +514,7 @@ export class IntercedeTransaction {
         this.state = TX_STATE.GENERATING;
         resetStoppedFlag();
 
-        // Resolved once, here: the prompt this generation runs under is fixed at
-        // arm time, so editing the template mid-flight cannot change it.
-        // @see docs/RATIONALE.md#PROMPT-02
+        // Resolved once, before arming. @see docs/RATIONALE.md#PROMPT-02
         const promptConfig = resolvePromptConfig();
         this.promptWrapperTag = promptConfig.wrapperTag;
 
@@ -642,8 +640,7 @@ export class IntercedeTransaction {
             suffix: this.suffix,
             generated: String(structure.suffixMessage.mes ?? ''),
             mode: this.rewriteMode,
-            // The container this generation was actually given, which under a
-            // custom template is not `scene_notes`. @see docs/RATIONALE.md#VAL-05
+            // Not `scene_notes` under a custom template. @see docs/RATIONALE.md#VAL-05
             wrapperTag: this.promptWrapperTag,
         });
         this.result = {

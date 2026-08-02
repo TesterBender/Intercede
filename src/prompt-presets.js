@@ -1,15 +1,8 @@
 /**
  * Built-in rewrite-instruction presets.
  *
- * The `scene-notes` preset is the wording that shipped through v0.6.0, moved here
- * verbatim so that an install which never touches the settings emits exactly the
- * same prompt it always did. `tests/prompt-config.test.js` pins that byte-for-byte.
- *
- * Wording constraint, inherited from `src/prompt.js` and binding on every preset
- * here and on anything a user writes: this must read as ordinary collaborative-fiction
- * direction, not as instructions about reusing prior model output. Earlier phrasing
- * ("original continuation", "discarded suffix", "retain the original wording") was
- * blocked by Anthropic's ToS filter as an attempt at "duplicating model outputs".
+ * The wording constraint in `src/prompt.js`'s header binds every preset here, and
+ * anything a user writes: scene direction, never output-reuse meta-language.
  *
  * @see docs/RATIONALE.md#PROMPT-01 the framing and why it is worded this way
  * @see docs/RATIONALE.md#PROMPT-02 why presets are data and the default is verbatim

@@ -16,7 +16,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { DEFAULT_SETTINGS, REWRITE_MODES } from '../src/constants.js';
 import { describeTemplateFallback, isUsableTemplate, resolvePromptConfig } from '../src/prompt-config.js';
-import { buildRewritePrompt, getWrapperTag } from '../src/prompt.js';
+import { buildRewritePrompt, getWrapperTag, getWrapperTags } from '../src/prompt.js';
 import { BUILT_IN_PRESETS, DEFAULT_PRESET } from '../src/prompt-presets.js';
 import { installFakeSillyTavern, uninstallFakeSillyTavern } from './helpers/fake-context.js';
 
@@ -168,7 +168,7 @@ describe('placeholder handling', () => {
         expect(prompt).toBe('Head\nMODE\n<n>S</n>\nTail');
     });
 
-    it('appends the mode wording when {{mode}} is absent', () => {
+    it('appends the mode wording exactly once when {{mode}} is absent', () => {
         const prompt = buildRewritePrompt({
             suffix: 'S',
             mode: REWRITE_MODES.PRESERVE,
@@ -177,6 +177,21 @@ describe('placeholder handling', () => {
         });
 
         expect(prompt).toBe('<n>S</n>\n\nMODE');
+        expect(prompt.match(/MODE/g)).toHaveLength(1);
+    });
+
+    it('appends once even when the suffix itself contains {{mode}}', () => {
+        // Whether to append is decided from the template. Reading it back off the
+        // assembled body would let the suffix suppress the append, or double it.
+        const prompt = buildRewritePrompt({
+            suffix: 'talking about {{mode}} here',
+            mode: REWRITE_MODES.PRESERVE,
+            template: '<n>{{suffix}}</n>',
+            addenda: { [REWRITE_MODES.PRESERVE]: 'MODE' },
+        });
+
+        expect(prompt).toBe('<n>talking about {{mode}} here</n>\n\nMODE');
+        expect(prompt.match(/MODE/g)).toHaveLength(1);
     });
 
     it('substitutes every occurrence of the suffix marker', () => {
@@ -202,12 +217,105 @@ describe('placeholder handling', () => {
     });
 });
 
+/**
+ * Regression: the assembled body used to be searched for `{{mode}}` *after* the
+ * suffix was joined into it, so a continuation containing that literal text had
+ * the mode wording spliced into the middle of a sentence. Reported live against
+ * "Here is {{mode}}. My Trap Card!".
+ *
+ * The rule these pin: placeholder resolution applies only to text the template
+ * author wrote. @see docs/RATIONALE.md#PROMPT-03
+ */
+describe('substituted values are data, not template source', () => {
+    it('leaves a literal {{mode}} in the suffix exactly where it was', () => {
+        const prompt = buildRewritePrompt({
+            suffix: 'Here is {{mode}}. My Trap Card!',
+            mode: REWRITE_MODES.ADAPTIVE,
+            template: '<scene_notes>\n{{suffix}}\n</scene_notes>\n{{mode}}',
+            addenda: { [REWRITE_MODES.ADAPTIVE]: 'MODE WORDING' },
+        });
+
+        expect(prompt).toBe(
+            '<scene_notes>\nHere is {{mode}}. My Trap Card!\n</scene_notes>\nMODE WORDING',
+        );
+        // Exactly one, and it came from the template's marker — not the suffix's.
+        expect(prompt.match(/MODE WORDING/g)).toHaveLength(1);
+    });
+
+    it('keeps every placeholder-looking sequence in the suffix literal', () => {
+        const suffix = "markers {{mode}} and {{suffix}}, patterns $& and $', all literal";
+        const prompt = buildRewritePrompt({
+            suffix,
+            mode: REWRITE_MODES.ADAPTIVE,
+            template: '<scene_notes>\n{{suffix}}\n</scene_notes>\n{{mode}}',
+            addenda: { [REWRITE_MODES.ADAPTIVE]: 'MODE WORDING' },
+        });
+
+        expect(prompt).toContain(suffix);
+        for (const sequence of ['{{mode}}', '{{suffix}}', '$&', "$'"]) {
+            expect(prompt, sequence).toContain(sequence);
+        }
+        expect(prompt.match(/MODE WORDING/g)).toHaveLength(1);
+    });
+
+    it('does not rescan the addendum it just inserted', () => {
+        // `join()` never revisits what it inserts; this pins that it stays that way.
+        const prompt = buildRewritePrompt({
+            suffix: 'PLAIN',
+            mode: REWRITE_MODES.ADAPTIVE,
+            template: '<scene_notes>\n{{suffix}}\n</scene_notes>\n{{mode}}',
+            addenda: { [REWRITE_MODES.ADAPTIVE]: "see {{mode}} and {{suffix}}, plus $& and $'" },
+        });
+
+        expect(prompt).toBe(
+            "<scene_notes>\nPLAIN\n</scene_notes>\nsee {{mode}} and {{suffix}}, plus $& and $'",
+        );
+    });
+
+    it('resolves template markers on both sides of the suffix', () => {
+        const prompt = buildRewritePrompt({
+            suffix: 'and {{mode}} stays put',
+            mode: REWRITE_MODES.ADAPTIVE,
+            template: '{{mode}}\n<n>{{suffix}}</n>\n{{mode}}',
+            addenda: { [REWRITE_MODES.ADAPTIVE]: 'W' },
+        });
+
+        expect(prompt).toBe('W\n<n>and {{mode}} stays put</n>\nW');
+    });
+});
+
 describe('the container the suffix cannot close', () => {
     it('reads the wrapper tag out of the active template', () => {
         expect(getWrapperTag(DEFAULT_PRESET.template)).toBe('scene_notes');
         expect(getWrapperTag('<story_plan>\n{{suffix}}\n</story_plan>')).toBe('story_plan');
         expect(getWrapperTag('no placeholder here')).toBe(null);
         expect(getWrapperTag('bare {{suffix}}')).toBe(null);
+    });
+
+    it('collects a container for every marker, deduplicated case-insensitively', () => {
+        expect(getWrapperTags(DEFAULT_PRESET.template)).toEqual(['scene_notes']);
+        expect(getWrapperTags('<first>{{suffix}}</first>\n<second>{{suffix}}</second>'))
+            .toEqual(['first', 'second']);
+        expect(getWrapperTags('<Notes>{{suffix}}</Notes>\n<notes>{{suffix}}</notes>'))
+            .toEqual(['Notes']);
+        // A marker with no container contributes nothing, but must not hide later ones.
+        expect(getWrapperTags('bare {{suffix}} then <n>{{suffix}}</n>')).toEqual(['n']);
+        expect(getWrapperTags('nothing here')).toEqual([]);
+    });
+
+    it('defangs every container the template opened, not only the first', () => {
+        const prompt = buildRewritePrompt({
+            suffix: 'closes </first> and </second> both',
+            mode: REWRITE_MODES.ADAPTIVE,
+            template: '<first>{{suffix}}</first>\n<second>{{suffix}}</second>',
+            addenda: { [REWRITE_MODES.ADAPTIVE]: '' },
+        });
+
+        expect(prompt).toContain('closes </first > and </second > both');
+        expect(prompt).not.toContain('closes </first> and </second> both');
+        // Each genuine closing tag, supplied by the template, survives exactly once.
+        expect(prompt.match(/<\/first>/g)).toHaveLength(1);
+        expect(prompt.match(/<\/second>/g)).toHaveLength(1);
     });
 
     it('defangs the default container exactly as v0.6.0 did', () => {

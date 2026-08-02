@@ -106,15 +106,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
     snapshotTtlDays: 0,
     showButton: true,
     warnExtensions: true,
-    /**
-     * Rewrite-instruction preset, or PROMPT_PRESETS.CUSTOM to use `promptTemplate`.
-     * @see docs/RATIONALE.md#CFG-04
-     */
+    /** Preset id, or PROMPT_PRESETS.CUSTOM to use `promptTemplate`. @see docs/RATIONALE.md#CFG-04 */
     promptPreset: PROMPT_PRESETS.SCENE_NOTES,
-    /**
-     * The five prompt fields below are flat strings, and empty means "use the
-     * built-in text" — never "send an empty prompt". @see docs/RATIONALE.md#CFG-04
-     */
+    /** Empty = the built-in text, never an empty prompt. @see docs/RATIONALE.md#CFG-04 */
     promptTemplate: '',
     promptModePreserve: '',
     promptModeAdaptive: '',

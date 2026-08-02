@@ -107,6 +107,7 @@ entire subject of this section.
 | Clear the custom template while on *Custom…* | Warning shown; the default is sent, not an empty prompt |
 | Delete `{{suffix}}` from a custom template | Warning shown; the default is sent — the continuation is never dropped |
 | A `</your_tag>` inside the selected text | Defanged in the request; the real container still closes once |
+| Selected text containing a literal `{{mode}}` or `{{suffix}}` | Reaches the request unchanged; the wording appears once, from the template's own marker |
 | Swipe a continuation made under a custom template | The swipe re-leases the **same** custom instruction |
 | Edit a template while a generation is in flight | The running generation is unaffected; the next one picks the edit up |
 | **Reset prompt to default** | Every prompt field clears; the preset returns to *Scene notes* |

@@ -61,6 +61,11 @@ with every previous release. There is no migration step.
   without it is not used at all.
 - `{{mode}}` is optional and marks where the per-strength wording goes. Leave it out and the
   wording is appended at the end, which is what the built-in templates do.
+- **Placeholders are template syntax only.** Text that *looks* like a placeholder inside the
+  set-aside continuation — a character who says `{{mode}}`, a code sample containing
+  `{{suffix}}` — is inserted literally and is never expanded. The same holds for the wording
+  boxes: an addendum is inserted, not re-read. Only what you write in the template is treated
+  as markup, so a continuation can contain anything without steering the instruction.
 - Keep edits phrased as scene or story direction. Wording that reads as an instruction to
   reuse a model's earlier output is rejected outright by some backends' filters — that is why
   the default talks about "notes" rather than about continuations.
@@ -74,6 +79,11 @@ with every previous release. There is no migration step.
   which a custom template need never use. Advisory as always — it warns, it never rolls back.
 - Suffix interpolation no longer goes through `String.replace`, so a continuation containing
   `$&` or `$'` is inserted literally rather than being expanded as a replacement pattern.
+- Placeholder resolution applies only to template-authored text. Values substituted into a
+  template — the set-aside continuation and the per-strength wording — are never rescanned,
+  so a continuation containing the literal `{{mode}}` or `{{suffix}}` no longer has the mode
+  wording spliced into it. Every container a template opens around a `{{suffix}}` marker is
+  now defended against being closed early from inside the continuation, not just the first.
 
 ## Not exercised for this release, and released knowing it
 

@@ -122,16 +122,9 @@ const META_COMMENTARY_PATTERNS = [
 ];
 
 /**
- * The active template's container name, as a pattern.
- *
- * The list above is the *default* prompt's vocabulary. Under a user-authored
- * template those words need never appear, and the check would quietly stop
- * catching the one leak it is best at: the model naming the container back.
- *
- * A single short word is skipped deliberately — a tag called `notes` or `plan`
- * fires on ordinary prose, and VAL-05 makes false positives the deciding cost.
- *
- * @see docs/RATIONALE.md#VAL-05
+ * The active template's container name, as a pattern. A single word under six
+ * characters derives nothing — `notes` and `plan` fire on ordinary prose.
+ * @see docs/RATIONALE.md#VAL-05 why the list above is not enough on its own
  */
 function wrapperTagPattern(wrapperTag) {
     if (typeof wrapperTag !== 'string') return null;
