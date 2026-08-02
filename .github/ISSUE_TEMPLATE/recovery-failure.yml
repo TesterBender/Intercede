@@ -1,0 +1,114 @@
+name: Recovery failure
+description: Messages are missing, duplicated, or an original message cannot be restored.
+title: "[Recovery] "
+labels: ["recovery", "priority"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do this first, in this order:**
+
+        1. **Do not close or switch the chat.** The recovery journal is scoped to the chat it
+           was written in.
+        2. Run `/intercede recover` if it was offered.
+        3. Take `/intercede diagnostics` **before** trying anything else — the `journal` field
+           says what stage it stopped at, and a later action may clear it.
+
+        Intercede never deletes a message it cannot prove it created, so in almost every case
+        the snapshot behind Undo is still in the vault even when the automatic path refuses.
+        That is what usually makes this recoverable rather than a post-mortem.
+
+  - type: input
+    id: intercede-version
+    attributes:
+      label: Intercede version
+      description: From `/intercede diagnostics` → `version`, plus the commit if you know it.
+      placeholder: "0.7.0"
+    validations:
+      required: true
+
+  - type: input
+    id: sillytavern-version
+    attributes:
+      label: SillyTavern version
+      placeholder: "1.18.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: trigger
+    attributes:
+      label: What interrupted it
+      description: A crash, a browser reload, a closed tab, a backend timeout, a stop button, a chat switch — or nothing you noticed.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: state
+    attributes:
+      label: What is in the chat right now
+      description: Check everything that is present. Leaving one unchecked is information too.
+      options:
+        - label: The original assistant message is present (whole, un-cut)
+        - label: A shortened assistant message — the preserved prefix — is present
+        - label: The user message Intercede inserted is present
+        - label: A generated assistant continuation is present
+        - label: An unrelated message disappeared
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: offered
+    attributes:
+      label: What Intercede offered
+      options:
+        - label: A notification saying it stopped without deleting anything
+        - label: A notification saying it failed and was rolled back
+        - label: "`/intercede recover` was offered"
+        - label: An Undo button on the message
+        - label: A Compare button on the message
+        - label: Nothing at all
+
+  - type: dropdown
+    id: recover-result
+    attributes:
+      label: What `/intercede recover` did
+      options:
+        - Restored the original message correctly
+        - Refused, saying the message no longer matches the snapshot
+        - Refused, saying the chat is shorter than the snapshot expects
+        - Refused, saying later messages could not be proven to belong to it
+        - Said the snapshot is no longer available
+        - Said the intercession belongs to another chat
+        - Something else — described below
+        - I did not run it
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: |
+        The full `[Intercede] diagnostics` console object. The **`journal`** field is the important
+        one here — it says which stage the transaction stopped at. Metadata only; redact `chat.id`
+        if it names something private.
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: lifecycle
+    attributes:
+      label: Lifecycle log
+      description: |
+        Run `Intercede.lifecycleLog()` in the console and paste the result. It is always being
+        recorded, so it is not empty in the session that needed it, and it holds event names and
+        argument shapes — never message text.
+      render: json
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots of the affected part of the chat are useful here even with the text redacted — the message *shape* is most of the diagnosis.

@@ -1,0 +1,146 @@
+name: Bug report
+description: Something Intercede did that it should not have done.
+title: "[Bug] "
+labels: ["bug", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **If messages are missing, duplicated, or you cannot get your original message back,
+        use the _Recovery failure_ form instead** — those are looked at first.
+
+        Worth a look before filing:
+        [Troubleshooting](https://github.com/TesterBender/Intercede/blob/main/docs/TROUBLESHOOTING.md)
+        (several of Intercede's messages are it working correctly) and
+        [Known issues](https://github.com/TesterBender/Intercede/blob/main/docs/KNOWN-ISSUES.md).
+
+  - type: input
+    id: intercede-version
+    attributes:
+      label: Intercede version
+      description: From `/intercede diagnostics` → `version`. If you installed from the repository URL you may be ahead of the latest tag — add the commit if you know it.
+      placeholder: "0.7.0"
+    validations:
+      required: true
+
+  - type: input
+    id: sillytavern-version
+    attributes:
+      label: SillyTavern version
+      placeholder: "1.18.0"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Browser and operating system
+      placeholder: "Firefox 130, Windows 11"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend-type
+    attributes:
+      label: Backend type
+      options:
+        - Chat completion
+        - Text completion
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Provider or local model
+      description: Whatever identifies it. "A 7B local model over koboldcpp" is enough.
+      placeholder: "koboldcpp, Mistral 7B Instruct"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: streaming
+    attributes:
+      label: Streaming
+      options:
+        - "On"
+        - "Off"
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: other-extensions
+    attributes:
+      label: Other extensions installed
+      description: Especially anything that touches messages, prompts, or the chat display — regex scripts set to *Alter Chat Display*, memory or summarisation extensions, prompt inspectors, TTS.
+      placeholder: "Regex (Alter Chat Display, strips <thinking> blocks); Timelines"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: From a fresh chat if you can get it to happen that way.
+      placeholder: |
+        1. Send a message, get a long assistant reply
+        2. Alt+I, choose the third paragraph boundary
+        3. Type a reply, choose "Adapt naturally", commit
+        4. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: Quote any notification exactly if you can — the wording identifies which path failed.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: rollback
+    attributes:
+      label: Did your original message come back?
+      options:
+        - "Yes — automatically, it was rolled back"
+        - "Yes — I ran /intercede recover"
+        - "Yes — I used Undo"
+        - "No, and I could not get it back"
+        - "Not applicable — nothing was changed"
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: |
+        Run `/intercede diagnostics` and paste the full console object (`[Intercede] diagnostics`).
+        It is metadata only — no prompt text, no chat text. It **does** include `chat.id`, which is
+        usually a filename derived from the character; redact that if you would rather not post it.
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Console errors
+      description: Anything red in the browser console, with its stack trace.
+      render: text
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots help, particularly for layout. Redact roleplay text you would rather not publish — the shape of the problem is worth as much as legible prose.

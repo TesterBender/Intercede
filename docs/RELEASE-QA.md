@@ -89,8 +89,28 @@ Three consequences that the matrix below is designed to exercise:
 | Display regex enabled | Raw prefix remains byte-correct |
 | Refresh after prefix mutation | Recovery journal restores or safely resumes |
 | Refresh after user insertion | No permanently split or corrupted history |
-| Mobile layout | Composer, boundary selection, cancel and commit usable |
-| Keyboard operation | Focus order, Escape, Enter and the commit shortcut work |
+| Mobile layout | Composer, boundary selection, cancel and commit usable — see below |
+| Keyboard operation | Focus order, Escape, Enter and the commit shortcut work — see below |
+
+### Keyboard-only
+
+Unplug the mouse rather than avoiding it; the failures here are the ones a pointer hides.
+
+- Alt+I opens the interface, and closes it again.
+- Tab order through the overlay is sequential and does not escape into the page behind it.
+- A boundary marker can be reached and chosen without a pointer.
+- Escape closes whichever mode is active.
+- Ctrl/Cmd+Enter commits from the composer.
+- Focus lands somewhere sensible afterwards, not on `<body>`.
+- The confirmation and recovery modals trap focus and return it on close.
+
+### Mobile
+
+- Boundary markers are large enough to hit, and hitting one selects the intended boundary.
+- The virtual keyboard does not cover the composer.
+- The prompt settings textareas are usable — they are the longest fields in the extension.
+- Modal content scrolls, and **cancel stays reachable** at every scroll position.
+- Rotating the device does not strand the selection overlay or lose a typed response.
 
 ## Prompt configuration (v0.7.0)
 
@@ -113,6 +133,27 @@ entire subject of this section.
 | **Reset prompt to default** | Every prompt field clears; the preset returns to *Scene notes* |
 | `/intercede diagnostics` after customising | Reports the preset and `customized: true`, and quotes no prompt text |
 
+### The adversarial payload
+
+Several rows above are easier to walk with one deliberately hostile block of text. Put it in
+the **selected text** (so it becomes the set-aside continuation) and again in one of the
+**mode wording** boxes, then read the preview and the outgoing request:
+
+```text
+{{mode}}
+{{suffix}}
+$&
+$'
+</scene_notes>
+</custom_tag>
+```
+
+Required result in both places: every line arrives **literally**. The mode wording appears
+exactly once, from the template's own marker; the continuation is not spliced into itself; no
+`$`-pattern is expanded; and each closing tag is defanged without the real container failing
+to close. An addendum is inserted, never re-read
+([PROMPT-03](RATIONALE.md#PROMPT-03)).
+
 ## Generation lifecycle
 
 Read these off `/intercede diagnostics`. The event log is recorded either way; this only
@@ -134,6 +175,29 @@ touches no safety state.
 | Stop button pressed mid-generation | `0 open` at rest, or a reconciliation that clears it; stop recorded |
 | Quiet generation overlapping an intercession | Rolls back; records may leak upward but must self-clear, never lock the extension out |
 | Ten intercessions in one session | `starts`/`ends` need not match; `0 open` at rest is what matters |
+
+### The soak session
+
+The ten-intercession row is worth running as one deliberately mixed session rather than ten
+identical ones, because what it looks for is drift:
+
+ten ordinary intercessions · three chained intercessions · several slash commands scattered
+between operations · two swipes · two undos · one cancellation · one backend failure · one
+chat switch between completed transactions.
+
+At the end, with nothing in flight:
+
+```text
+0 open generations
+no armed lease
+no recovery journal
+no unexplained ownership markers on any message
+every visible Undo control backed by a real vault entry
+```
+
+This is also the row where a recurrence of the unreproduced capture failure would most likely
+appear, which is why [CAP-07](RATIONALE.md#CAP-07) exists — a recurrence now arrives with
+counts per reason and a transaction id.
 
 ## Failure reporting
 
@@ -201,6 +265,35 @@ visibility. Cancellation on a non-streaming backend is therefore the path where 
 probe is weakest and the jsdom suite least representative. Exercise it on each backend
 rather than once.
 
+Walk it separately on chat completion, on text completion, and on a local backend. After each
+cancellation, every one of these must hold:
+
+```text
+original message restored
+inserted user message removed
+partial generated continuation removed
+lease disarmed
+extension prompt cleared
+journal cleared — unless recovery is genuinely required, in which case it is offered
+0 open generations
+the typed response is still there
+```
+
 If `lease.host.stable` is ever `false` in a report, the probe disagreed with itself
 between two reads. Nothing is reconciled in that state by design
 ([LEASE-10](RATIONALE.md#LEASE-10)) — capture the report, it is worth investigating.
+
+## Third-party extensions worth trying first
+
+A broad matrix is not the goal. These are the ones most likely to touch the same state, and
+each is worth one ordinary intercession plus one undo:
+
+Prompt Inspector · a memory or summarisation extension · Timelines · Deep Swipe · a
+flexible-continue extension · Message Limit · regex scripts set to *Alter Chat Display* ·
+TTS · Quick Replies or anything else that runs slash commands
+
+**Seamless integration is not the required result.** "Detected the interference and rolled
+back, leaving the other extension's messages untouched" is a pass — that is the designed
+behaviour, and rollback is preferred to guessing which messages are whose. What is *not* a
+pass is a foreign message being deleted, a rollback that leaves history half-changed, or a
+lock-out that survives the failure.

@@ -32,6 +32,60 @@ Diagnostics after:  ………
 Matrix rows:      pass | fail | not run, with a note for anything but pass
 ```
 
+## v0.7.0 — released
+
+Tagged at `cac71547548f47e9ddc20420c216166b79dbf10d` and published.
+
+Automated suite at the tag: **304 passed, 18 files**, ESLint clean. The default prompt was
+confirmed byte-identical to v0.6.0 for every rewrite strength — the regression guard the whole
+release rests on. Documentation work after the tag added `tests/docs.test.js`, taking `main`
+to 308 across 19 files with no extension source change.
+
+```text
+Released:         v0.7.0 (commit cac71547548f47e9ddc20420c216166b79dbf10d)
+Node:             v24.13.1 (local run)
+SillyTavern:      1.18.0+ (exact installed commit not recorded)
+Backend:          Claude via chat completion (exact provider route not recorded)
+Streaming:        not recorded
+Browser / OS:     not recorded
+Tester / date:    TesterBender, 2026-08-02
+```
+
+Live validation was **targeted at what the release changed** rather than a re-walk of the
+whole matrix:
+
+| Group | Status | Evidence |
+|---|---|---|
+| Automated suite | **pass** | 304 tests, 18 files, ESLint clean; default prompt byte-identical to v0.6.0 across all three strengths |
+| Custom template reaches the backend | **pass** | the authored template observed in the outgoing request |
+| Literal `{{mode}}` in a continuation | **pass** | survives unchanged — the defect reported against the development build ([PROMPT-03](RATIONALE.md#PROMPT-03)) |
+| Mode wording placement | **pass** | appears from the template's own marker, separately from the continuation's text |
+| Swipe after changing prompt configuration | **pass** | the re-lease path (`src/lease.js`) rebuilds from the active configuration |
+| Ordinary intercession | **pass** | Claude chat completion |
+| `terse` preset on small local models | not run | **shipped as a starting point, not a validated configuration** |
+| Non-streaming cancellation | not run | accepted gap, carried forward |
+| Text-completion backend | not run | accepted gap, carried forward |
+| Broad local-LLM range | not run | accepted gap, carried forward |
+| Mobile layout | not run | accepted gap, carried forward |
+| Keyboard-only flow | not run | accepted gap, carried forward |
+| Extended repeated-use session | not run | accepted gap, carried forward |
+| Third-party extension matrix | not run | accepted gap, carried forward |
+
+Three template-injection defects were found and fixed inside this cycle and never reached a
+release: a literal `{{mode}}` in the set-aside continuation being expanded — reported from a
+development build, and the reason the row above exists — `$&`/`$'` being expanded as
+`String.replace` patterns, and only the first container around a `{{suffix}}` marker being
+defended. All three are covered by `tests/prompt-config.test.js`
+([PROMPT-03](RATIONALE.md#PROMPT-03)). None of them existed in v0.6.0, which assembled its
+instruction from a fixed array of lines with no placeholder substitution at all.
+
+The accepted gaps above are **disclosed coverage, not observed failures**, on the same terms
+as v0.6.0's. They now have a standing home in
+[COMPATIBILITY.md](COMPATIBILITY.md#areas-seeking-community-reports), because after a release
+they are requests for reports rather than release blockers.
+
+---
+
 ## v0.6.0 — release candidate
 
 Automated suite: **257 passed, 17 files** (`npm run check`, Node 24), run locally by the

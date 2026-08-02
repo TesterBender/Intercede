@@ -1,0 +1,24 @@
+# Blank issues are disabled so that reports arrive with the fields that make them
+# actionable — version pair, backend, streaming, and diagnostics. Every form still has a
+# free-text box, and "I am not sure which form this is" is a fine thing to write in one.
+blank_issues_enabled: false
+
+contact_links:
+  - name: Troubleshooting first
+    url: https://github.com/TesterBender/Intercede/blob/main/docs/TROUBLESHOOTING.md
+    about: Several of Intercede's messages are it working correctly. This says which.
+
+  - name: Known issues
+    url: https://github.com/TesterBender/Intercede/blob/main/docs/KNOWN-ISSUES.md
+    about: Confirmed, suspected, and already-fixed problems.
+
+  - name: What to include in a report
+    url: https://github.com/TesterBender/Intercede/blob/main/docs/REPORTING-PROBLEMS.md
+    about: How to get diagnostics, and what to redact before posting them.
+
+  # Uncomment once Discussions is enabled on the repository:
+  #   gh repo edit TesterBender/Intercede --enable-discussions
+  #
+  - name: Questions and general help
+    url: https://github.com/TesterBender/Intercede/discussions
+    about: Anything that is not yet a reproducible bug — setup help, prompt wording, backend experiences.

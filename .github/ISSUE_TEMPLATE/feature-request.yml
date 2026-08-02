@@ -1,0 +1,57 @@
+name: Feature request
+description: An idea for something Intercede does not do yet.
+title: "[Idea] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Worth checking [the roadmap](https://github.com/TesterBender/Intercede/blob/main/docs/ROADMAP.md)
+        first — a good deal is already deferred there with the reason attached, including
+        per-character prompts, group chats, macro expansion, historical intercession, and
+        preset import/export. If your idea is on it, say so and add what you need from it;
+        that is more useful than a duplicate.
+
+        Its *Not planned* section is short and the reasons are structural rather than
+        preferences.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation, not the solution. What were you writing, and what did Intercede make awkward?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help
+      description: A rough shape is fine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What you do instead today
+      description: Including "nothing, I gave up on that scene" — that is a real answer and it says something about priority.
+
+  - type: dropdown
+    id: roadmap
+    attributes:
+      label: Is this already on the roadmap?
+      options:
+        - "No, or I could not tell"
+        - "Yes — this issue adds detail to an existing entry"
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        Intercede rewrites canonical chat history, so anything that would make it *guess* on
+        your behalf — repairing a disturbed intercession instead of rolling it back, undoing
+        from the middle of a chain, adopting a message it cannot prove it created — is likely
+        to be declined on those grounds rather than on effort. That is not a reason to skip
+        filing; it is the reason the answer may be "no" with a link attached.

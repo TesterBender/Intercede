@@ -1,24 +1,16 @@
-# Intercede v0.7.0 — draft release notes
+# Intercede v0.7.0 — release notes
 
-**Not published, and nothing is tagged.** Everything below is prepared text.
+**Released.** Tagged `v0.7.0` at commit `cac7154` and published.
 
 ```text
-Tag:      v0.7.0          (annotated, on the merge commit — not on the branch)
 Title:    Intercede v0.7.0 — your prompt, your backend
 Body:     everything below the rule, from "The rewrite instruction…" onward
 Assets:   none — SillyTavern installs from the repository URL
 ```
 
-Publish only once, in this order:
-
-1. the branch is merged into `main`;
-2. GitHub Actions is **green on the exact commit being tagged** — the merge commit;
-3. the live QA rows in [RELEASE-QA.md](RELEASE-QA.md) are walked, or the gaps are accepted
-   and written into [RELEASE-TESTS.md](RELEASE-TESTS.md);
-4. the maintainer authorizes the tag.
-
-**One item needs a decision before tagging.** The `terse` preset is new wording that has not
-been through the tuning the other two have — see *Before you tag* at the end.
+What was actually run, and what was knowingly left open, is recorded in
+[RELEASE-TESTS.md](RELEASE-TESTS.md#v070--released). The `terse` preset shipped as a starting
+point rather than a validated configuration — see *The `terse` preset* at the end.
 
 ---
 
@@ -104,14 +96,22 @@ Not implemented, deliberately: per-character or per-chat prompt overrides, Silly
 expansion (`{{char}}`, `{{user}}`) inside templates, and preset import/export. Prompt
 customisation is global.
 
-## Before you tag
+## The `terse` preset
 
-The `terse` preset's wording is the one part of this release that is prompt authorship rather
-than plumbing, and it has not been through the process that produced the other two — the
-default's phrasing was rewritten once already after a backend filter rejected it
-([PROMPT-01](RATIONALE.md#PROMPT-01)).
+It shipped, and it shipped as **a starting point rather than a validated configuration.**
 
-Either sign off on the text in `src/prompt-presets.js` after reading it, or cut the preset and
-ship two built-ins plus *Custom…*. Removing it is a three-line change: drop `TERSE` from
-`PROMPT_PRESETS`, drop its entry from `BUILT_IN_PRESETS`, and update the expected option list
-in `tests/settings-panel.test.js`. Nothing else depends on it.
+Its wording is the one part of this release that is prompt authorship rather than plumbing,
+and it has not been through the process that produced the other two — the default's phrasing
+was rewritten once already after a backend filter rejected it
+([PROMPT-01](RATIONALE.md#PROMPT-01)). It has not been tuned against a broad selection of the
+small local models it is written for.
+
+If you run a local model, this is the most useful thing you could report on: does it react to
+your inserted response, keep useful material from the set-aside continuation, avoid narrating
+the instruction back, avoid repeating the prefix, and honour all three rewrite strengths?
+[How to report.](REPORTING-PROBLEMS.md)
+
+Should it prove wrong for its audience rather than merely untuned, withdrawing it is a
+three-line change: drop `TERSE` from `PROMPT_PRESETS`, drop its entry from
+`BUILT_IN_PRESETS`, and update the expected option list in `tests/settings-panel.test.js`.
+Nothing else depends on it.
