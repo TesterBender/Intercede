@@ -19,6 +19,6 @@ contact_links:
   # Uncomment once Discussions is enabled on the repository:
   #   gh repo edit TesterBender/Intercede --enable-discussions
   #
-  # - name: Questions and general help
-  #   url: https://github.com/TesterBender/Intercede/discussions
-  #   about: Anything that is not yet a reproducible bug — setup help, prompt wording, backend experiences.
+  - name: Questions and general help
+    url: https://github.com/TesterBender/Intercede/discussions
+    about: Anything that is not yet a reproducible bug — setup help, prompt wording, backend experiences.
