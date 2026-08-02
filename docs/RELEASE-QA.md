@@ -35,10 +35,12 @@ event — belong in the automated suite and are listed as such in
 confidently by a stale checkout as by a current one. Run `/intercede diagnostics` and check
 the console report:
 
-- `version` is `0.6.0`;
+- `version` is `0.7.0`;
 - `lease.events` contains **`opaqueEnds`**, `namedStarts`, `defaultedStarts`,
   `opaqueStarts`, `confirmedStarts` and `reconciledUnconfirmed`;
-- `lease.reconcileReason` is present.
+- `lease.reconcileReason` is present;
+- a **`prompt`** block is present, reporting `preset`, `customized` and `fallback`. A report
+  without it is pre-v0.7.0 regardless of what its `version` says.
 
 A report whose `events` block has only `starts / dryRuns / ends / unmatchedEnds /
 kindMismatchedEnds / reconciledFromHostIdle / stops` is the **pre-fix build**. Findings
@@ -89,6 +91,26 @@ Three consequences that the matrix below is designed to exercise:
 | Refresh after user insertion | No permanently split or corrupted history |
 | Mobile layout | Composer, boundary selection, cancel and commit usable |
 | Keyboard operation | Focus order, Escape, Enter and the commit shortcut work |
+
+## Prompt configuration (v0.7.0)
+
+The automated suite covers resolution and fallback against a simulated host. What it cannot
+cover is what a real backend does with an instruction it has not seen before — which is the
+entire subject of this section.
+
+| Test | Required result |
+| --- | --- |
+| Upgrade from v0.6.0 without opening the Prompt section | The armed instruction is unchanged; `prompt.customized` is `false` |
+| Each built-in preset, one intercession | Commits normally; no filter rejection from the backend |
+| `terse` preset on a small local model | Commits without the model narrating the instruction back |
+| Custom template with a renamed container | Commits; the container name appears in the request, not `scene_notes` |
+| Clear the custom template while on *Custom…* | Warning shown; the default is sent, not an empty prompt |
+| Delete `{{suffix}}` from a custom template | Warning shown; the default is sent — the continuation is never dropped |
+| A `</your_tag>` inside the selected text | Defanged in the request; the real container still closes once |
+| Swipe a continuation made under a custom template | The swipe re-leases the **same** custom instruction |
+| Edit a template while a generation is in flight | The running generation is unaffected; the next one picks the edit up |
+| **Reset prompt to default** | Every prompt field clears; the preset returns to *Scene notes* |
+| `/intercede diagnostics` after customising | Reports the preset and `customized: true`, and quotes no prompt text |
 
 ## Generation lifecycle
 

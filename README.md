@@ -67,6 +67,39 @@ SillyTavern/public/scripts/extensions/third-party/Intercede
 | `/intercede diagnostics` | Report generation state, host probe, and event tallies (also `Intercede.diagnostics()`) |
 | `/intercede reset` | Clear diagnostic counters and the event log. Touches no lease or transaction state |
 
+### Tuning the instruction
+
+The rewrite instruction is what actually decides how a regeneration turns out, and the
+default was tuned against one setup (Claude over chat completion). **Extensions → Intercede →
+Prompt** lets you change it:
+
+| Preset | For |
+| --- | --- |
+| **Scene notes** *(default)* | The shipped wording. Unchanged from v0.6.0 |
+| **Direct** | The same framing, fewer tokens |
+| **Terse** | Small local models that start narrating a long preamble back at you |
+| **Custom…** | Your own template |
+
+A custom template needs `{{suffix}}` — it marks where the set-aside continuation goes.
+`{{mode}}` marks where the per-strength wording goes; leave it out and it is added at the
+end. The three wording boxes are editable under any preset.
+
+**Every prompt box is optional.** An empty one uses the built-in text shown greyed inside
+it, so clearing a box is how you undo an edit, and **Reset prompt to default** clears all of
+them at once. A template that is empty or has lost its `{{suffix}}` marker is not used at
+all — Intercede falls back to the default and says so above the preview rather than sending
+an instruction that would silently drop your continuation.
+
+Expand **Preview the assembled instruction** to see exactly what will be sent, with a sample
+continuation filled in. Editing a template blind is the one way this goes wrong.
+
+> One wording constraint worth knowing: keep edits phrased as scene or story direction.
+> Text that reads as an instruction to reuse a model's earlier output is rejected by some
+> backends' filters — that is why the default talks about "notes" rather than about
+> continuations. `/intercede diagnostics` reports which preset you are on (never the text).
+
+SillyTavern macros (`{{char}}`, `{{user}}`) are **not** expanded inside these templates.
+
 ## Safety model
 
 Interceding mutates canonical history, so every operation runs as a transaction:
@@ -184,7 +217,7 @@ version loads; existing choices are never rewritten, and nothing needs migrating
 Snapshots are the only storage that grows, which is what `/intercede cleanup` and the
 snapshot-age setting are for.
 
-## Limitations (v0.6)
+## Limitations (v0.7)
 
 - Latest completed assistant message only; one intercession runs at a time (chains are
   sequential — you intercede the finished continuation, not a generation in flight).
@@ -210,6 +243,13 @@ snapshot-age setting are for.
   committed intercession.
 - An intercession that another extension disturbs mid-generation is rolled back rather than
   repaired. That is deliberate: the alternative is guessing which messages are whose.
+- Prompt customisation is global: one instruction for every chat and character. Per-character
+  overrides, SillyTavern macro expansion inside templates, and importing/exporting presets
+  are not implemented.
+- The quality heuristic that notices a continuation talking *about* the rewrite is tuned to
+  the default vocabulary. It learns your container tag (`<scene_notes>` or whatever you
+  rename it to), but a heavily reworded custom template may see fewer of these advisory
+  warnings. They never block or alter a commit either way.
 
 ## Development
 
@@ -267,7 +307,9 @@ src/stcontext.js             SillyTavern.getContext() access + capability check
 src/segmentation.js          protected Markdown regions, paragraph/sentence boundaries
 src/anchors.js               source-anchored cuts (hashes + context, rebase-or-abort)
 src/vault.js                 discarded-suffix vault (localforage) + recovery journal
-src/prompt.js                the one-generation suffix-revision instruction
+src/prompt.js                assembles the one-generation suffix-revision instruction
+src/prompt-presets.js        the built-in instruction texts (default = the v0.6.0 wording)
+src/prompt-config.js         resolves preset/custom/overrides from settings
 src/lease.js                 generation lease + swipe/regenerate re-leasing
 src/ownership.js             per-message ownership markers and chain provenance
 src/generation-capture.js    identifies the generated continuation by event, not position

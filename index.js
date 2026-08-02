@@ -11,6 +11,7 @@
 
 import { INTERCEDE_EVENTS } from './src/constants.js';
 import { getLeaseDiagnostics, getLifecycleLog, initLease, resetLeaseTallies } from './src/lease.js';
+import { resolvePromptConfig } from './src/prompt-config.js';
 import { getBoundaries, getProtectedRanges } from './src/segmentation.js';
 import {
     checkCapabilities,
@@ -30,7 +31,7 @@ import { initSettingsPanel } from './src/ui/settings.js';
 import { notify, waitUntil } from './src/utils.js';
 import { readJournal, vaultKeys } from './src/vault.js';
 
-const VERSION = '0.6.0';
+const VERSION = '0.7.0';
 
 /**
  * What the *loaded* code actually does, probed rather than asserted.
@@ -144,6 +145,15 @@ function collectDiagnostics() {
             ? getLifecycleLog()
             : 'not included — Intercede.setDebugLifecycle(true), or read it now with Intercede.lifecycleLog()',
         journal: readJournal(),
+        // Which instruction this install is actually sending. The first question
+        // behind "my regenerations got strange" is whether the prompt was edited,
+        // and the report should answer it without a round trip. The text itself
+        // never travels — reports get pasted into public issues.
+        // @see docs/RATIONALE.md#PROMPT-02
+        prompt: (() => {
+            const { presetId, customized, fallback } = resolvePromptConfig();
+            return { preset: presetId, customized, fallback };
+        })(),
         chat: {
             id: getCurrentChatId(ctx),
             length: Array.isArray(ctx?.chat) ? ctx.chat.length : null,

@@ -42,6 +42,7 @@ import {
     OWNED_ROLE,
 } from './ownership.js';
 import { buildRewritePrompt } from './prompt.js';
+import { resolvePromptConfig } from './prompt-config.js';
 import { splitAtOffset } from './segmentation.js';
 import {
     deleteMessageAt,
@@ -312,6 +313,8 @@ export class IntercedeTransaction {
         /** Filled in by preflight; non-zero when the target is itself a revised continuation. */
         this.chain = { parentTransactionId: null, depth: 0 };
         this.result = { warnings: [], preservation: null };
+        /** Container name of the template this run was armed with. @see docs/RATIONALE.md#PROMPT-02 */
+        this.promptWrapperTag = null;
         this._rollingBack = false;
         /** Canonical state actually changed. @see docs/RATIONALE.md#TX-02 */
         this._mutated = false;
@@ -511,11 +514,17 @@ export class IntercedeTransaction {
         this.state = TX_STATE.GENERATING;
         resetStoppedFlag();
 
+        // Resolved once, here: the prompt this generation runs under is fixed at
+        // arm time, so editing the template mid-flight cannot change it.
+        // @see docs/RATIONALE.md#PROMPT-02
+        const promptConfig = resolvePromptConfig();
+        this.promptWrapperTag = promptConfig.wrapperTag;
+
         armLease({
             transactionId: this.transactionId,
             chatId: this.chatId,
             kinds: ['normal'],
-            prompt: buildRewritePrompt({ suffix: this.suffix, mode: this.rewriteMode }),
+            prompt: buildRewritePrompt({ suffix: this.suffix, mode: this.rewriteMode, ...promptConfig }),
         });
         updateJournalStrict({ stage: JOURNAL_STAGE.GENERATION_STARTED });
 
@@ -633,6 +642,9 @@ export class IntercedeTransaction {
             suffix: this.suffix,
             generated: String(structure.suffixMessage.mes ?? ''),
             mode: this.rewriteMode,
+            // The container this generation was actually given, which under a
+            // custom template is not `scene_notes`. @see docs/RATIONALE.md#VAL-05
+            wrapperTag: this.promptWrapperTag,
         });
         this.result = {
             warnings: [...structure.warnings, ...quality.warnings],

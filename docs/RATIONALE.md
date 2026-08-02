@@ -1794,6 +1794,15 @@ renames one breaks the binding silently: the panel still renders, and the contro
 belongs to simply stops doing anything. `tests/settings-panel.test.js` enumerates every
 bound id and asserts the markup still carries it.
 
+The **Prompt** section added in v0.7.0 sits second of four, between *Behaviour* and *Safety*
+— ahead of the toggles, because it is the setting that changes what the model is told, and
+behind the enable switch, because it is meaningless while the extension is off. It is also
+the one section whose controls are not self-explaining, so it carries the drawer's only
+preview: a template edited blind is the failure this feature invites, and a preview is
+cheaper than a spent generation. Its `select` is populated *before* the stored value is
+read — a `select` silently refuses a value it has no option for, which would present a
+customised install as though it sat on the default.
+
 **The width correction has to be global.** SillyTavern styles `.menu_button` as
 `width: min-content`, which wraps a multi-word label one word per line — and inside
 `.mes_text` (`overflow-wrap: anywhere`) min-content is one *character*. The stylesheet
@@ -1900,11 +1909,37 @@ that was supposed to make the extension harmless.
 The wand entry is added once at init, so visibility has to be refreshed when the setting
 changes rather than decided at construction. The per-message button follows the same call.
 
+<a id="CFG-04"></a>
+### CFG-04 — The prompt settings are flat, and empty means default
+**Sites:** `src/constants.js` › `DEFAULT_SETTINGS`; `src/prompt-config.js`; `src/ui/settings.js` › `refreshPromptView()`
+**Related:** [PROMPT-02](#PROMPT-02), [CFG-01](#CFG-01)
+
+The five prompt fields are flat keys — `promptPreset`, `promptTemplate`, and one per mode —
+rather than the `prompts: { … }` object the shape invites.
+
+`getSettings()` migrates by filling any key that is `undefined` from `DEFAULT_SETTINGS`, and
+that loop is **shallow**. A nested object would satisfy the check as soon as it existed, so
+every sub-key added in a later release would be missing for everyone who had already run the
+version that introduced it — the one group whose settings the migration exists to carry
+forward. Flat keys make each field independently migratable, which is the property actually
+being relied on.
+
+**An empty field means "use the built-in text", never "send an empty prompt."** One rule,
+covering two failures that would otherwise need separate handling: `undefined` is the only
+value the migration treats as missing, so a user who clears a textarea persists `''` and
+would otherwise silently blank their own instruction; and a template that has lost its
+`{{suffix}}` marker would drop the set-aside continuation entirely — the whole subject of the
+generation — while looking like it worked.
+
+Consequently the drawer shows resolved text as each box's `placeholder`, never as its
+`value`. Writing the default into the value would freeze it: a later release could no longer
+improve the wording for anyone who had opened the drawer once.
+
 ---
 
 # Prompt — `PROMPT-*`
 
-> **`src/prompt.js` is not modified by this document.** It is tuned, and its comments
+> **The default wording is not modified by this document.** It is tuned, and its comments
 > remain in the file. They are reproduced here for cross-reference only. Behaviour
 > requests against it are plumbing changes elsewhere, not prompt edits.
 
@@ -1915,6 +1950,42 @@ changes rather than decided at construction. The per-message button follows the 
 
 The suffix-revision instruction is worded as in-fiction scene notes so backend ToS
 filters do not mistake it for output-reuse.
+
+<a id="PROMPT-02"></a>
+### PROMPT-02 — Templates are data; the default is reproduced, not rewritten
+**Sites:** `src/prompt-presets.js`; `src/prompt-config.js`; `src/prompt.js` › `buildRewritePrompt()`, `getWrapperTag()`; `src/transaction.js` › `generateSuffix()`
+**Guards:** INV-11 **Related:** [PROMPT-01](#PROMPT-01), [CFG-04](#CFG-04), [VAL-05](#VAL-05)
+
+The instruction is the single largest influence on whether a regeneration is any good, and
+it was tuned against one backend. Users on a text-completion endpoint or a small local model
+had no way to change it. It is therefore selectable and editable — but under three
+constraints, because the default's wording is load-bearing ([PROMPT-01](#PROMPT-01)).
+
+**The default is moved, not edited.** `prompt.js` keeps the wording constraint in its header
+and gains parameters; the text itself moves verbatim into `scene-notes`, and
+`tests/prompt-config.test.js` compares the assembled result against a transcription of the
+v0.6.0 output. An install that never opens the drawer sends the identical string it always
+did — which is what makes this a minor release rather than a change of behaviour.
+
+**Resolution is separate from assembly.** `prompt.js` reads no settings; the two call sites
+resolve a config and spread it in. That keeps the assembler exercisable without a host, and
+keeps `prompt.js` the file that only ever holds wording.
+
+**The prompt is fixed at arm time.** `generateSuffix()` resolves once, before `armLease()`.
+Editing a template while a generation is in flight cannot alter the instruction that
+generation is running under, and the swipe re-lease path ([LEASE-06](#LEASE-06)) rebuilds from
+the same resolver rather than from a second copy of the default.
+
+Two things follow from the container name no longer being a constant. `sanitizeSuffix()`
+reads the wrapper tag out of the active template, because the container that needs defending
+is whichever one the template actually opened — while still defanging `scene_notes`, which
+costs nothing and covers a suffix that predates a template change. And the meta-commentary
+heuristic gains the same tag ([VAL-05](#VAL-05)): its built-in list is the *default* prompt's
+vocabulary, and under a custom template it would otherwise stop catching the leak it is best
+at — the model naming the container back.
+
+Interpolation is `split`/`join`, not `replace`. The suffix is chat text, and `$&` or `$'`
+inside it would be expanded as a replacement pattern.
 
 ---
 

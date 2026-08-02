@@ -8,6 +8,7 @@
 
 import { EXTENSION_PROMPT_KEY, LEASE_TTL_MS, METADATA_KEY } from './constants.js';
 import { buildRewritePrompt } from './prompt.js';
+import { resolvePromptConfig } from './prompt-config.js';
 import { getChatMetadata, getCtx, getCurrentChatId, getEventSource, getEventTypes, getPromptRoles, getPromptTypes, probeHostGeneration } from './stcontext.js';
 import { vaultGet, vaultGetCached } from './vault.js';
 
@@ -448,7 +449,11 @@ async function onGenerationStarted(type, ...rest) {
         if (!record?.vaultKey) return;
         const vaultRecord = vaultGetCached(record.vaultKey) ?? await vaultGet(record.vaultKey);
         if (vaultRecord?.discardedSuffix) {
-            setPrompt(buildRewritePrompt({ suffix: vaultRecord.discardedSuffix, mode: record.rewriteMode }));
+            setPrompt(buildRewritePrompt({
+                suffix: vaultRecord.discardedSuffix,
+                mode: record.rewriteMode,
+                ...resolvePromptConfig(),
+            }));
         }
     }
 }

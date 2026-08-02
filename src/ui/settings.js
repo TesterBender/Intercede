@@ -3,12 +3,30 @@
  * @see docs/RATIONALE.md#UI-13 the sectioning, and why no `id` here may move
  */
 
-import { REWRITE_MODES } from '../constants.js';
+import { DEFAULT_SETTINGS, PROMPT_PRESETS, REWRITE_MODES } from '../constants.js';
+import { resolvePromptConfig } from '../prompt-config.js';
+import { BUILT_IN_PRESETS, DEFAULT_PRESET, getPreset } from '../prompt-presets.js';
+import { buildRewritePrompt } from '../prompt.js';
 import { getCtx, getSettings, saveSettings } from '../stcontext.js';
 import { cleanupSnapshots } from '../transaction.js';
-import { notify } from '../utils.js';
+import { debounce, notify } from '../utils.js';
 import { vaultKeys } from '../vault.js';
 import { refreshButtonVisibility } from './message-button.js';
+
+/** Mode → its textarea id and settings key. @see docs/RATIONALE.md#CFG-04 */
+const PROMPT_MODE_FIELDS = [
+    [REWRITE_MODES.PRESERVE, 'intercede_prompt_mode_preserve', 'promptModePreserve'],
+    [REWRITE_MODES.ADAPTIVE, 'intercede_prompt_mode_adaptive', 'promptModeAdaptive'],
+    [REWRITE_MODES.REIMAGINE, 'intercede_prompt_mode_reimagine', 'promptModeReimagine'],
+];
+
+/** Stand-in for the set-aside continuation, so the preview reads like a real prompt. */
+const PREVIEW_SAMPLE = 'She turned back toward the door, one hand still resting on the frame.';
+
+const FALLBACK_NOTICE = {
+    empty: 'Your template is empty, so the default instruction is being used.',
+    'missing-suffix': 'Your template has no {{suffix}} marker — the set-aside continuation would be dropped entirely, so the default instruction is being used instead.',
+};
 
 const PANEL_HTML = `
 <div class="intercede-settings">
@@ -47,6 +65,43 @@ const PANEL_HTML = `
                 <small class="intercede-settings-note">
                     Intercede works on the latest completed assistant message.
                 </small>
+            </div>
+            <div class="intercede-settings-section">
+                <div class="intercede-settings-heading">Prompt</div>
+                <label for="intercede_prompt_preset">Rewrite instruction</label>
+                <select id="intercede_prompt_preset" class="text_pole"></select>
+                <div id="intercede_prompt_custom" class="intercede-prompt-custom">
+                    <label for="intercede_prompt_template">Your template</label>
+                    <textarea id="intercede_prompt_template" class="text_pole intercede-prompt-area" rows="12"
+                        spellcheck="false"></textarea>
+                    <small class="intercede-settings-note">
+                        <code>{{suffix}}</code> marks where the set-aside continuation goes and is required.
+                        <code>{{mode}}</code> marks where the wording below goes; leave it out and it is added
+                        at the end. Empty falls back to the default.
+                    </small>
+                </div>
+                <label for="intercede_prompt_mode_preserve">Wording — preserve closely</label>
+                <textarea id="intercede_prompt_mode_preserve" class="text_pole intercede-prompt-area" rows="2"
+                    spellcheck="false"></textarea>
+                <label for="intercede_prompt_mode_adaptive">Wording — adapt naturally</label>
+                <textarea id="intercede_prompt_mode_adaptive" class="text_pole intercede-prompt-area" rows="2"
+                    spellcheck="false"></textarea>
+                <label for="intercede_prompt_mode_reimagine">Wording — reimagine remainder</label>
+                <textarea id="intercede_prompt_mode_reimagine" class="text_pole intercede-prompt-area" rows="2"
+                    spellcheck="false"></textarea>
+                <small class="intercede-settings-note">
+                    An empty box uses the wording shown greyed inside it. Keep any edits phrased as scene or
+                    story direction — wording that reads as instructions about reusing a model's earlier output
+                    is rejected outright by some backends' filters.
+                </small>
+                <details class="intercede-prompt-preview-wrap">
+                    <summary>Preview the assembled instruction</summary>
+                    <div id="intercede_prompt_warning" class="intercede-prompt-warning" hidden></div>
+                    <pre id="intercede_prompt_preview" class="intercede-prompt-preview"></pre>
+                </details>
+                <div class="intercede-settings-actions">
+                    <button type="button" id="intercede_prompt_reset" class="menu_button">Reset prompt to default</button>
+                </div>
             </div>
             <div class="intercede-settings-section">
                 <div class="intercede-settings-heading">Safety</div>
@@ -101,13 +156,31 @@ export function initSettingsPanel() {
             onChange?.();
         });
     };
-    const bindSelect = (id, key) => {
+    const bindSelect = (id, key, onChange) => {
         const select = byId(id);
         select.value = String(settings[key]);
         select.addEventListener('change', () => {
             getSettings()[key] = select.value;
             saveSettings();
+            onChange?.();
         });
+    };
+
+    /**
+     * Saved on `input` behind a debounce so a long template is not written to
+     * settings on every keystroke, and again on `change` so a blur commits
+     * immediately rather than 300ms later.
+     */
+    const bindTextarea = (id, key, onChange) => {
+        const area = byId(id);
+        area.value = String(settings[key] ?? '');
+        const commit = () => {
+            getSettings()[key] = area.value;
+            saveSettings();
+            onChange?.();
+        };
+        area.addEventListener('input', debounce(commit, 300));
+        area.addEventListener('change', commit);
     };
 
     bindCheckbox('intercede_enabled', 'enabled', refreshButtonVisibility);
@@ -122,6 +195,8 @@ export function initSettingsPanel() {
     if (byId('intercede_default_mode').value === '') {
         byId('intercede_default_mode').value = REWRITE_MODES.ADAPTIVE;
     }
+
+    initPromptControls({ byId, bindSelect, bindTextarea });
 
     const ttl = byId('intercede_snapshot_ttl');
     ttl.value = String(settings.snapshotTtlDays ?? 0);
@@ -144,5 +219,82 @@ export function initSettingsPanel() {
         notify('info', days > 0
             ? `Removed ${result.removed} snapshot(s) older than ${days} day(s); ${remaining} remain.`
             : `Snapshot age limit is 0 (keep forever); ${remaining} snapshot(s) stored.`);
+    });
+}
+
+/**
+ * The Prompt section. Options are appended before `bindSelect` reads the stored
+ * value — a `select` silently refuses a value it has no option for, which would
+ * present a customised install as though it were on the default.
+ */
+function initPromptControls({ byId, bindSelect, bindTextarea }) {
+    const select = byId('intercede_prompt_preset');
+    for (const preset of Object.values(BUILT_IN_PRESETS)) {
+        select.append(promptOption(preset.id, preset.label));
+    }
+    select.append(promptOption(PROMPT_PRESETS.CUSTOM, 'Custom…'));
+
+    const refresh = () => refreshPromptView(byId);
+
+    bindSelect('intercede_prompt_preset', 'promptPreset', refresh);
+    bindTextarea('intercede_prompt_template', 'promptTemplate', refresh);
+    for (const [, id, key] of PROMPT_MODE_FIELDS) {
+        bindTextarea(id, key, refresh);
+    }
+
+    byId('intercede_prompt_reset').addEventListener('click', () => {
+        const settings = getSettings();
+        settings.promptPreset = DEFAULT_SETTINGS.promptPreset;
+        settings.promptTemplate = '';
+        for (const [, , key] of PROMPT_MODE_FIELDS) settings[key] = '';
+        saveSettings();
+
+        byId('intercede_prompt_preset').value = settings.promptPreset;
+        byId('intercede_prompt_template').value = '';
+        for (const [, id] of PROMPT_MODE_FIELDS) byId(id).value = '';
+        refresh();
+        notify('info', 'Prompt reset to the default instruction.');
+    });
+
+    refresh();
+}
+
+function promptOption(value, label) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    return option;
+}
+
+/**
+ * Re-render everything downstream of the prompt fields.
+ *
+ * The resolved text is shown as each box's `placeholder`, never as its `value`:
+ * an empty box has to read as "using this", because storing the default text as
+ * a value would freeze it — a later release could not improve the wording for
+ * anyone who had ever opened the drawer.
+ */
+function refreshPromptView(byId) {
+    const settings = getSettings();
+    const config = resolvePromptConfig(settings);
+    const preset = getPreset(config.presetId);
+
+    byId('intercede_prompt_custom').hidden = settings.promptPreset !== PROMPT_PRESETS.CUSTOM;
+    byId('intercede_prompt_template').placeholder = DEFAULT_PRESET.template;
+    for (const [mode, id] of PROMPT_MODE_FIELDS) {
+        byId(id).placeholder = preset.addenda[mode] ?? '';
+    }
+
+    const warning = byId('intercede_prompt_warning');
+    const notice = FALLBACK_NOTICE[config.fallback];
+    warning.textContent = notice ?? '';
+    warning.hidden = !notice;
+
+    // Editing a template blind is how this feature goes wrong; the preview is
+    // what makes a mistyped placeholder visible before a generation spends it.
+    byId('intercede_prompt_preview').textContent = buildRewritePrompt({
+        suffix: PREVIEW_SAMPLE,
+        mode: settings.defaultMode,
+        ...config,
     });
 }

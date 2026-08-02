@@ -476,6 +476,68 @@
     border-top: 1px solid var(--SmartThemeBorderColor, rgba(0, 0, 0, 0.5));
 }
 
+/* ── Settings panel: prompt section ───────────────────────────────────── */
+
+/* The custom-template block is a flex child, so `hidden` alone loses to
+   `display: flex` and the box would stay visible on every preset. */
+.intercede-prompt-custom {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.intercede-prompt-custom[hidden] {
+    display: none;
+}
+
+/* Prompts are read as literal text: proportional type hides the blank line
+   that separates one instruction from the next. */
+.intercede-prompt-area {
+    font-family: var(--monoFontFamily, ui-monospace, monospace);
+    font-size: 0.85em;
+    line-height: 1.45;
+    resize: vertical;
+    white-space: pre;
+    overflow-wrap: normal;
+    overflow-x: auto;
+}
+
+.intercede-prompt-preview-wrap > summary {
+    cursor: pointer;
+    color: var(--SmartThemeEmColor, rgb(145, 145, 145));
+    font-size: 0.9em;
+}
+
+.intercede-prompt-preview {
+    margin: 6px 0 0;
+    padding: 8px;
+    max-height: 22em;
+    overflow: auto;
+    font-family: var(--monoFontFamily, ui-monospace, monospace);
+    font-size: 0.8em;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    color: var(--SmartThemeEmColor, rgb(145, 145, 145));
+    background-color: var(--black30a, rgba(0, 0, 0, 0.3));
+    border: 1px solid var(--SmartThemeBorderColor, rgba(0, 0, 0, 0.5));
+    border-radius: 6px;
+}
+
+/* Amber, not red: the prompt still works, it is just not the one they wrote. */
+.intercede-prompt-warning {
+    margin-top: 6px;
+    padding: 6px 8px;
+    font-size: 0.85em;
+    color: var(--SmartThemeBodyColor, inherit);
+    background-color: rgba(190, 140, 40, 0.18);
+    border-left: 3px solid rgba(220, 165, 50, 0.9);
+    border-radius: 4px;
+}
+
+.intercede-prompt-warning[hidden] {
+    display: none;
+}
+
 /* ── In-place mode (markers rendered on the live message) ─────────────── */
 
 .mes.intercede-inline-active .mes_text {
