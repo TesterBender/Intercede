@@ -96,7 +96,10 @@ continuation filled in. Editing a template blind is the one way this goes wrong.
 > One wording constraint worth knowing: keep edits phrased as scene or story direction.
 > Text that reads as an instruction to reuse a model's earlier output is rejected by some
 > backends' filters — that is why the default talks about "notes" rather than about
-> continuations. `/intercede diagnostics` reports which preset you are on (never the text).
+> continuations. This mostly bites hosted APIs; local models rarely care. The full account,
+> including the phrasing that was actually rejected, is
+> **[PROMPT-01](docs/RATIONALE.md#PROMPT-01)** — worth reading before writing a template
+> from scratch. `/intercede diagnostics` reports which preset you are on (never the text).
 
 SillyTavern macros (`{{char}}`, `{{user}}`) are **not** expanded inside these templates.
 
