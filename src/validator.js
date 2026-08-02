@@ -122,19 +122,34 @@ const META_COMMENTARY_PATTERNS = [
 ];
 
 /**
+ * The active template's container name, as a pattern. A single word under six
+ * characters derives nothing — `notes` and `plan` fire on ordinary prose.
+ * @see docs/RATIONALE.md#VAL-05 why the list above is not enough on its own
+ */
+function wrapperTagPattern(wrapperTag) {
+    if (typeof wrapperTag !== 'string') return null;
+    const words = wrapperTag.trim().toLowerCase().split(/[_\-:]+/).filter(Boolean);
+    if (!words.length) return null;
+    if (words.length === 1 && words[0].length < 6) return null;
+    const escaped = words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    return new RegExp(`\\b${escaped.join('[ _-]')}\\b`, 'i');
+}
+
+/**
  * Which pattern matched, or null. The label travels; the prose never does.
  * @see docs/RATIONALE.md#VAL-05
  */
-export function describeMetaCommentary(generated) {
+export function describeMetaCommentary(generated, { wrapperTag } = {}) {
     const text = String(generated ?? '');
     for (const [label, pattern] of META_COMMENTARY_PATTERNS) {
         if (pattern.test(text)) return label;
     }
-    return null;
+    const custom = wrapperTagPattern(wrapperTag);
+    return custom?.test(text) ? 'wrapper-tag' : null;
 }
 
-export function detectMetaCommentary(generated) {
-    return describeMetaCommentary(generated) !== null;
+export function detectMetaCommentary(generated, options) {
+    return describeMetaCommentary(generated, options) !== null;
 }
 
 function wordTrigrams(text) {
@@ -164,7 +179,7 @@ export function computePreservation(originalSuffix, revisedSuffix) {
 /**
  * Run all quality heuristics; returns human-readable warning strings.
  */
-export function qualityWarnings({ prefix, insertion, suffix, generated, mode }) {
+export function qualityWarnings({ prefix, insertion, suffix, generated, mode, wrapperTag }) {
     const warnings = [];
 
     const overlap = detectPrefixOverlap(prefix, generated);
@@ -175,7 +190,7 @@ export function qualityWarnings({ prefix, insertion, suffix, generated, mode }) 
         warnings.push('The continuation appears to repeat your inserted response.');
     }
     // Advisory, never a reason to roll back. @see docs/RATIONALE.md#VAL-05
-    const meta = describeMetaCommentary(generated);
+    const meta = describeMetaCommentary(generated, { wrapperTag });
     if (meta) {
         warnings.push('Worth re-reading — the continuation may step outside the scene to talk about the rewrite.');
     }

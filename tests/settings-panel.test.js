@@ -25,6 +25,15 @@ const SELECTS = [
     ['intercede_interface', 'selectionInterface', 'window'],
     ['intercede_boundaries', 'boundaries', 'paragraph'],
     ['intercede_default_mode', 'defaultMode', 'preserve'],
+    ['intercede_prompt_preset', 'promptPreset', 'direct'],
+];
+
+/** The prompt fields, which are free text rather than a fixed set of values. */
+const TEXTAREAS = [
+    ['intercede_prompt_template', 'promptTemplate'],
+    ['intercede_prompt_mode_preserve', 'promptModePreserve'],
+    ['intercede_prompt_mode_adaptive', 'promptModeAdaptive'],
+    ['intercede_prompt_mode_reimagine', 'promptModeReimagine'],
 ];
 
 async function mountPanel() {
@@ -50,11 +59,13 @@ describe('settings panel bindings', () => {
     it('renders every element the panel binds by id', async () => {
         await mountPanel();
 
-        for (const [id] of [...CHECKBOXES, ...SELECTS]) {
+        for (const [id] of [...CHECKBOXES, ...SELECTS, ...TEXTAREAS]) {
             expect(document.getElementById(id), id).toBeTruthy();
         }
         expect(document.getElementById('intercede_snapshot_ttl')).toBeTruthy();
         expect(document.getElementById('intercede_cleanup_now')).toBeTruthy();
+        expect(document.getElementById('intercede_prompt_preview')).toBeTruthy();
+        expect(document.getElementById('intercede_prompt_reset')).toBeTruthy();
     });
 
     it('points every checkbox label at an input that exists', async () => {
@@ -92,6 +103,16 @@ describe('settings panel bindings', () => {
         expect(getSettings()[key]).toBe(value);
     });
 
+    it.each(TEXTAREAS)('writes %s through to settings.%s', async (id, key) => {
+        const { getSettings } = await mountPanel();
+        const area = document.getElementById(id);
+
+        area.value = 'Keep it short.';
+        area.dispatchEvent(new Event('change'));
+
+        expect(getSettings()[key]).toBe('Keep it short.');
+    });
+
     it('clamps a negative snapshot age to zero', async () => {
         const { getSettings } = await mountPanel();
         const ttl = document.getElementById('intercede_snapshot_ttl');
@@ -114,12 +135,113 @@ describe('settings panel bindings', () => {
     });
 });
 
+/**
+ * The prompt section is the one place in the drawer where a control can be
+ * *bound correctly* and still be wrong: a preset the select cannot display, or
+ * a preview that stops tracking the fields it is supposed to explain.
+ */
+describe('prompt section', () => {
+    const selectPreset = (value) => {
+        const select = document.getElementById('intercede_prompt_preset');
+        select.value = value;
+        select.dispatchEvent(new Event('change'));
+        return select;
+    };
+
+    it('offers an option for every preset, so a stored value can round-trip', async () => {
+        const { getSettings } = await mountPanel();
+        const values = [...document.getElementById('intercede_prompt_preset').options].map(o => o.value);
+
+        expect(values).toEqual(['scene-notes', 'direct', 'terse', 'custom']);
+        // A select silently drops a value it has no option for; that would show
+        // a customised install as though it sat on the default.
+        expect(values).toContain(getSettings().promptPreset);
+    });
+
+    it('reveals the template box only for the custom preset', async () => {
+        await mountPanel();
+        const box = document.getElementById('intercede_prompt_custom');
+
+        expect(box.hidden).toBe(true);
+        selectPreset('custom');
+        expect(box.hidden).toBe(false);
+        selectPreset('direct');
+        expect(box.hidden).toBe(true);
+    });
+
+    it('shows the default wording as a placeholder, never as a value', async () => {
+        await mountPanel();
+        const area = document.getElementById('intercede_prompt_mode_adaptive');
+
+        // Storing the default as a value would freeze it: a later release could
+        // not improve the wording for anyone who had opened the drawer once.
+        expect(area.value).toBe('');
+        expect(area.placeholder).toContain('Balance the two');
+    });
+
+    it('renders a preview that resolves the placeholders', async () => {
+        await mountPanel();
+        const preview = document.getElementById('intercede_prompt_preview').textContent;
+
+        expect(preview).not.toContain('{{suffix}}');
+        expect(preview).not.toContain('{{mode}}');
+        expect(preview).toContain('<scene_notes>');
+    });
+
+    it('warns, and falls back, when a custom template loses its suffix marker', async () => {
+        await mountPanel();
+        selectPreset('custom');
+
+        const area = document.getElementById('intercede_prompt_template');
+        area.value = 'Continue the scene however you like.';
+        area.dispatchEvent(new Event('change'));
+
+        const warning = document.getElementById('intercede_prompt_warning');
+        expect(warning.hidden).toBe(false);
+        expect(warning.textContent).toMatch(/\{\{suffix\}\}/);
+        // The preview must show what will actually be sent — the default.
+        expect(document.getElementById('intercede_prompt_preview').textContent)
+            .toContain('<scene_notes>');
+    });
+
+    it('tracks a usable custom template in the preview, with no warning', async () => {
+        await mountPanel();
+        selectPreset('custom');
+
+        const area = document.getElementById('intercede_prompt_template');
+        area.value = 'Notes:\n<plan>\n{{suffix}}\n</plan>\nContinue.';
+        area.dispatchEvent(new Event('change'));
+
+        expect(document.getElementById('intercede_prompt_warning').hidden).toBe(true);
+        const preview = document.getElementById('intercede_prompt_preview').textContent;
+        expect(preview).toContain('<plan>');
+        expect(preview).not.toContain('<scene_notes>');
+    });
+
+    it('clears every prompt field when reset, and says so', async () => {
+        const { getSettings } = await mountPanel();
+        selectPreset('custom');
+        const area = document.getElementById('intercede_prompt_mode_preserve');
+        area.value = 'Verbatim, please.';
+        area.dispatchEvent(new Event('change'));
+
+        document.getElementById('intercede_prompt_reset').click();
+
+        expect(getSettings().promptPreset).toBe('scene-notes');
+        expect(getSettings().promptModePreserve).toBe('');
+        expect(area.value).toBe('');
+        expect(document.getElementById('intercede_prompt_preset').value).toBe('scene-notes');
+        expect(document.getElementById('intercede_prompt_custom').hidden).toBe(true);
+        expect(globalThis.toastr.info).toHaveBeenCalled();
+    });
+});
+
 describe('settings panel layout contract', () => {
     it('groups the controls into headed sections', async () => {
         await mountPanel();
 
         const sections = document.querySelectorAll('.intercede-settings-section');
-        expect(sections).toHaveLength(3);
+        expect(sections).toHaveLength(4);
         for (const section of sections) {
             expect(section.querySelector('.intercede-settings-heading')).toBeTruthy();
         }

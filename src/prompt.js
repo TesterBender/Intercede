@@ -7,53 +7,101 @@
  * wording") was blocked by Anthropic's ToS filter as an attempt at
  * "duplicating model outputs". Keep any future edits framed as scene notes /
  * story planning, and avoid editing- or output-reuse meta-language.
+ *
+ * @see docs/RATIONALE.md#PROMPT-02 why the texts live in prompt-presets.js
+ * @see docs/RATIONALE.md#PROMPT-03 why nothing substituted in is ever rescanned
  */
 
 import { REWRITE_MODES } from './constants.js';
+import { DEFAULT_PRESET, MODE_PLACEHOLDER, SUFFIX_PLACEHOLDER } from './prompt-presets.js';
 
-const MODE_ADDENDA = {
-    [REWRITE_MODES.PRESERVE]: 'Stay close to the notes: keep their lines, events, and order wherever they still fit,\nchanging only what the reply makes necessary.',
-    [REWRITE_MODES.ADAPTIVE]: "Balance the two: keep the notes' important moments where they fit, but let the\ncharacter react to the reply first, reordering and rephrasing freely.",
-    [REWRITE_MODES.REIMAGINE]: 'Treat the notes as loose inspiration only: follow the conversation wherever it\nnaturally leads, even if that means leaving the notes behind.',
-};
+/** The opening tag immediately before a position, whitespace apart. */
+const OPENING_TAG_BEFORE = /<\s*([a-z][\w:-]*)[^>]*>\s*$/i;
 
-/** Defang anything in the suffix that would close our reference container early. */
-function sanitizeSuffix(suffix) {
-    return String(suffix ?? '').replace(/<\s*\/\s*scene_notes\s*>/gi, '</scene notes>');
+/**
+ * Every distinct container wrapping a suffix marker, in order, deduplicated
+ * case-insensitively.
+ * @see docs/RATIONALE.md#PROMPT-03 why all of them, not just the first
+ */
+export function getWrapperTags(template) {
+    const source = String(template ?? '');
+    const tags = [];
+    const seen = new Set();
+    let index = source.indexOf(SUFFIX_PLACEHOLDER);
+    while (index >= 0) {
+        const match = OPENING_TAG_BEFORE.exec(source.slice(0, index));
+        const key = match?.[1].toLowerCase();
+        if (key && !seen.has(key)) {
+            seen.add(key);
+            tags.push(match[1]);
+        }
+        index = source.indexOf(SUFFIX_PLACEHOLDER, index + SUFFIX_PLACEHOLDER.length);
+    }
+    return tags;
+}
+
+/** The first such container, or null — for the callers that report only one. */
+export function getWrapperTag(template) {
+    return getWrapperTags(template)[0] ?? null;
+}
+
+/**
+ * A closing tag the model will not read as closing the container we opened.
+ * `scene_notes` keeps its historical `</scene notes>` form exactly.
+ */
+function defangedForm(tag) {
+    const spaced = tag.replace(/_/g, ' ');
+    return spaced === tag ? `</${tag} >` : `</${spaced}>`;
+}
+
+/**
+ * Defang anything in the suffix that would close one of our containers early.
+ * The only alteration made to suffix text, and the only `replace` on this path.
+ * @see docs/RATIONALE.md#PROMPT-03 why its replacement must stay `$`-free
+ */
+function sanitizeSuffix(suffix, wrapperTags = []) {
+    let text = String(suffix ?? '');
+    // `scene_notes` is defanged even under a custom template: the suffix may predate it.
+    const tags = new Set(['scene_notes']);
+    for (const tag of wrapperTags) {
+        if (typeof tag === 'string' && tag.trim()) tags.add(tag.toLowerCase());
+    }
+    for (const tag of tags) {
+        const pattern = new RegExp(`<\\s*/\\s*${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*>`, 'gi');
+        text = text.replace(pattern, defangedForm(tag));
+    }
+    return text;
 }
 
 /**
  * @param {object} options
  * @param {string} options.suffix the discarded original continuation
  * @param {string} options.mode one of REWRITE_MODES
+ * @param {string} [options.template] active template; falls back to the default preset
+ * @param {object} [options.addenda] per-mode wording; falls back to the default preset
  * @returns {string}
  */
-export function buildRewritePrompt({ suffix, mode }) {
-    const addendum = MODE_ADDENDA[mode] ?? MODE_ADDENDA[REWRITE_MODES.ADAPTIVE];
-    return [
-        "[Continue the roleplay. The character's previous message stands exactly as written, and the user has just replied to it.",
-        '',
-        "Before the user's reply, the scene was headed in the direction sketched in the notes below. These notes are planning material only — nothing in them has happened in the story yet.",
-        '',
-        '<scene_notes>',
-        sanitizeSuffix(suffix),
-        '</scene_notes>',
-        '',
-        "Write the character's next message as a natural response to the user's latest reply. Where the dialogue, actions, intentions, and emotional beats from the notes still fit, carry them forward with adjusted timing and transitions; quietly drop whatever no longer fits.",
-        '',
-        "Keep the character's voice and the scene's style. Do not repeat or contradict the character's previous message, and do not echo the user's reply back. Never mention these notes or instructions in the story.",
-        "Begin directly with the character's next action or spoken line.]",
-        '',
-        // "[Continue the roleplay after the user's latest reply. The character's previous message is fixed.",
-        // '',
-        // 'The following notes are unrealized plans, not events that have already occurred:',
-        // '',
-        // '<scene_notes>',
-        // sanitizeSuffix(suffix),
-        // '</scene_notes>',
-        // '',
-        // "Write the character's next message naturally in the established voice and style. Adapt any notes that still fit and omit those that do not. Do not repeat or contradict the previous message, echo the user's reply, or reveal these notes or instructions. Begin directly with action or dialogue.]",
-        // '',
-        addendum,
-    ].join('\n');
+export function buildRewritePrompt({ suffix, mode, template, addenda } = {}) {
+    // A template that lost its placeholder would silently drop the suffix.
+    // @see docs/RATIONALE.md#PROMPT-02
+    const activeTemplate = typeof template === 'string' && template.includes(SUFFIX_PLACEHOLDER)
+        ? template
+        : DEFAULT_PRESET.template;
+    const activeAddenda = addenda ?? DEFAULT_PRESET.addenda;
+    const addendum = activeAddenda[mode]
+        ?? activeAddenda[REWRITE_MODES.ADAPTIVE]
+        ?? DEFAULT_PRESET.addenda[REWRITE_MODES.ADAPTIVE];
+
+    // Resolved within template fragments, never across the assembled string, and
+    // decided from the template rather than from the result.
+    // @see docs/RATIONALE.md#PROMPT-03 — substituted values are data, not source
+    const hasModePlaceholder = activeTemplate.includes(MODE_PLACEHOLDER);
+    const safeSuffix = sanitizeSuffix(suffix, getWrapperTags(activeTemplate));
+
+    const body = activeTemplate
+        .split(SUFFIX_PLACEHOLDER)
+        .map(fragment => fragment.split(MODE_PLACEHOLDER).join(addendum))
+        .join(safeSuffix);
+
+    return hasModePlaceholder ? body : `${body}\n\n${addendum}`;
 }

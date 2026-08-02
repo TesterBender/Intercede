@@ -45,7 +45,21 @@ describe('diagnostics reporting', () => {
         expect(report.eligibility).toMatchObject({ generationActive: false, openGenerations: 0 });
         expect(report.lease.openCount).toBe(0);
         expect(report.journal).toBeNull();
-        expect(report.version).toBe('0.6.0');
+        expect(report.version).toBe('0.7.0');
+    });
+
+    /**
+     * "My regenerations got strange" is answered first by knowing whether the
+     * prompt was edited at all. The report carries the preset and a flag — never
+     * the text, which would travel into whatever public issue this is pasted in.
+     */
+    it('reports which instruction is in use, without quoting it', async () => {
+        await bootExtension();
+
+        const report = globalThis.Intercede.diagnostics();
+
+        expect(report.prompt).toEqual({ preset: 'scene-notes', customized: false, fallback: null });
+        expect(JSON.stringify(report)).not.toContain('scene_notes');
     });
 
     /**

@@ -1034,8 +1034,8 @@ presented as one.
 
 <a id="VAL-05"></a>
 ### VAL-05 — A warning nobody can act on costs more than it catches
-**Sites:** `src/validator.js` › `META_COMMENTARY_PATTERNS`, `describeMetaCommentary()`
-**Related:** [VAL-01](#VAL-01), [TX-16](#TX-16)
+**Sites:** `src/validator.js` › `META_COMMENTARY_PATTERNS`, `wrapperTagPattern()`, `describeMetaCommentary()`
+**Related:** [VAL-01](#VAL-01), [TX-16](#TX-16), [PROMPT-02](#PROMPT-02)
 
 The meta-commentary check is advisory: it warns, it never rolls back, and it never edits
 prose. That makes its false-positive rate the only thing that decides whether it is worth
@@ -1056,6 +1056,17 @@ the continuation is committed and intact, and what is being asked for is a read-
 
 `describeMetaCommentary()` returns the matching pattern's **label**, which is what the
 console line and any future diagnostics field carry. The matched prose stays out of both.
+
+Since v0.7.0 the list is joined by one derived pattern: the container name of the template
+actually in use ([PROMPT-02](#PROMPT-02)), matched under the label `wrapper-tag`. The fixed
+list above is the *default* prompt's vocabulary, and a user-authored template need never use
+those words — the check would quietly stop catching the leak it is best at, the model naming
+the container back, while still appearing to work.
+
+The same false-positive arithmetic bounds it. A container of one short word — `notes`,
+`plan` — fires on ordinary prose (*"She left notes across the table"* is already a pinned
+non-match), so a single word under six characters derives no pattern at all. Missing a leak
+costs a warning nobody sees; inventing one costs the credibility of every warning after it.
 
 ---
 
@@ -1794,6 +1805,15 @@ renames one breaks the binding silently: the panel still renders, and the contro
 belongs to simply stops doing anything. `tests/settings-panel.test.js` enumerates every
 bound id and asserts the markup still carries it.
 
+The **Prompt** section added in v0.7.0 sits second of four, between *Behaviour* and *Safety*
+— ahead of the toggles, because it is the setting that changes what the model is told, and
+behind the enable switch, because it is meaningless while the extension is off. It is also
+the one section whose controls are not self-explaining, so it carries the drawer's only
+preview: a template edited blind is the failure this feature invites, and a preview is
+cheaper than a spent generation. Its `select` is populated *before* the stored value is
+read — a `select` silently refuses a value it has no option for, which would present a
+customised install as though it sat on the default.
+
 **The width correction has to be global.** SillyTavern styles `.menu_button` as
 `width: min-content`, which wraps a multi-word label one word per line — and inside
 `.mes_text` (`overflow-wrap: anywhere`) min-content is one *character*. The stylesheet
@@ -1900,11 +1920,37 @@ that was supposed to make the extension harmless.
 The wand entry is added once at init, so visibility has to be refreshed when the setting
 changes rather than decided at construction. The per-message button follows the same call.
 
+<a id="CFG-04"></a>
+### CFG-04 — The prompt settings are flat, and empty means default
+**Sites:** `src/constants.js` › `DEFAULT_SETTINGS`; `src/prompt-config.js`; `src/ui/settings.js` › `refreshPromptView()`
+**Related:** [PROMPT-02](#PROMPT-02), [CFG-01](#CFG-01)
+
+The five prompt fields are flat keys — `promptPreset`, `promptTemplate`, and one per mode —
+rather than the `prompts: { … }` object the shape invites.
+
+`getSettings()` migrates by filling any key that is `undefined` from `DEFAULT_SETTINGS`, and
+that loop is **shallow**. A nested object would satisfy the check as soon as it existed, so
+every sub-key added in a later release would be missing for everyone who had already run the
+version that introduced it — the one group whose settings the migration exists to carry
+forward. Flat keys make each field independently migratable, which is the property actually
+being relied on.
+
+**An empty field means "use the built-in text", never "send an empty prompt."** One rule,
+covering two failures that would otherwise need separate handling: `undefined` is the only
+value the migration treats as missing, so a user who clears a textarea persists `''` and
+would otherwise silently blank their own instruction; and a template that has lost its
+`{{suffix}}` marker would drop the set-aside continuation entirely — the whole subject of the
+generation — while looking like it worked.
+
+Consequently the drawer shows resolved text as each box's `placeholder`, never as its
+`value`. Writing the default into the value would freeze it: a later release could no longer
+improve the wording for anyone who had opened the drawer once.
+
 ---
 
 # Prompt — `PROMPT-*`
 
-> **`src/prompt.js` is not modified by this document.** It is tuned, and its comments
+> **The default wording is not modified by this document.** It is tuned, and its comments
 > remain in the file. They are reproduced here for cross-reference only. Behaviour
 > requests against it are plumbing changes elsewhere, not prompt edits.
 
@@ -1915,6 +1961,87 @@ changes rather than decided at construction. The per-message button follows the 
 
 The suffix-revision instruction is worded as in-fiction scene notes so backend ToS
 filters do not mistake it for output-reuse.
+
+<a id="PROMPT-02"></a>
+### PROMPT-02 — Templates are data; the default is reproduced, not rewritten
+**Sites:** `src/prompt-presets.js`; `src/prompt-config.js`; `src/prompt.js` › `buildRewritePrompt()`, `getWrapperTag()`; `src/transaction.js` › `generateSuffix()`
+**Guards:** INV-11 **Related:** [PROMPT-01](#PROMPT-01), [CFG-04](#CFG-04), [VAL-05](#VAL-05)
+
+The instruction is the single largest influence on whether a regeneration is any good, and
+it was tuned against one backend. Users on a text-completion endpoint or a small local model
+had no way to change it. It is therefore selectable and editable — but under three
+constraints, because the default's wording is load-bearing ([PROMPT-01](#PROMPT-01)).
+
+**The default is moved, not edited.** `prompt.js` keeps the wording constraint in its header
+and gains parameters; the text itself moves verbatim into `scene-notes`, and
+`tests/prompt-config.test.js` compares the assembled result against a transcription of the
+v0.6.0 output. An install that never opens the drawer sends the identical string it always
+did — which is what makes this a minor release rather than a change of behaviour.
+
+**Resolution is separate from assembly.** `prompt.js` reads no settings; the two call sites
+resolve a config and spread it in. That keeps the assembler exercisable without a host, and
+keeps `prompt.js` the file that only ever holds wording.
+
+**The prompt is fixed at arm time.** `generateSuffix()` resolves once, before `armLease()`.
+Editing a template while a generation is in flight cannot alter the instruction that
+generation is running under, and the swipe re-lease path ([LEASE-06](#LEASE-06)) rebuilds from
+the same resolver rather than from a second copy of the default.
+
+The diagnostics report carries the preset id and a `customized` flag, and **never the prompt
+text**. "My regenerations got strange" is answered first by knowing whether the instruction
+was edited at all, so the report should answer it without a round trip — but a report exists
+to be pasted into a public issue, and a user's own template is not something to publish on
+their behalf.
+
+Two things follow from the container name no longer being a constant. `sanitizeSuffix()`
+reads the wrapper tag out of the active template, because the container that needs defending
+is whichever one the template actually opened — while still defanging `scene_notes`, which
+costs nothing and covers a suffix that predates a template change. And the meta-commentary
+heuristic gains the same tag ([VAL-05](#VAL-05)): its built-in list is the *default* prompt's
+vocabulary, and under a custom template it would otherwise stop catching the leak it is best
+at — the model naming the container back.
+
+Interpolation is `split`/`join`, not `replace`. The suffix is chat text, and `$&` or `$'`
+inside it would be expanded as a replacement pattern.
+
+<a id="PROMPT-03"></a>
+### PROMPT-03 — Substituted values are data, never template source
+**Sites:** `src/prompt.js` › `buildRewritePrompt()`, `getWrapperTags()`
+**Related:** [PROMPT-02](#PROMPT-02)
+
+Placeholder resolution applies only to text the template author wrote. Everything
+substituted *into* the template — the suffix, the mode wording — is data, and data is never
+scanned for placeholders.
+
+This was got wrong once, and the failure is instructive. The first implementation
+interpolated `{{suffix}}` and then searched the **assembled body** for `{{mode}}`. A
+continuation containing the literal text `{{mode}}` — a card game, a code sample, a chat
+about this extension — therefore had the mode wording spliced into the middle of a sentence.
+The user's own words were being executed as template syntax.
+
+The fix is an ordering one, not a filtering one: split the template on `{{suffix}}` **first**,
+resolve `{{mode}}` inside each resulting fragment, and only then join the sanitised suffix
+between them. Placeholders in the suffix are never reachable because the suffix is never part
+of a string that gets split, and placeholders in the addendum are never reachable because
+`join()` does not rescan what it inserts. Escaping the suffix would have been the weaker
+answer — it makes the prompt lie about what the character actually wrote.
+
+Two consequences worth stating, because both are easy to reintroduce:
+
+- **Whether to append the addendum is decided from the template**, not from the assembled
+  body. Reading it back off the result would let a suffix containing `{{mode}}` suppress the
+  append, or add a second copy.
+- **Every marker gets its container defended, not just the first.** A template may carry more
+  than one `{{suffix}}`, and they need not share a wrapper. `getWrapperTags()` collects all of
+  them — deduplicated case-insensitively, and always including `scene_notes` — so a suffix
+  that closes the *second* container is defanged too. `getWrapperTag()` remains as the
+  single-value form for the diagnostics field and the [VAL-05](#VAL-05) heuristic.
+
+Defanging is the one exception to "the suffix is inserted unaltered", and it is the only
+`String.replace` left on this path. It is safe because its *replacement* is a literal with no
+`$` in it; the text being scanned is chat prose, which is exactly where a stray `$&` comes
+from. Any future edit that makes that replacement dynamic reintroduces the bug this rule
+exists to prevent.
 
 ---
 

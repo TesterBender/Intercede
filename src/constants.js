@@ -30,6 +30,18 @@ export const REWRITE_MODE_LABELS = Object.freeze({
     reimagine: 'Reimagine remainder',
 });
 
+/**
+ * Built-in rewrite-instruction presets, plus `CUSTOM` for a user-authored template.
+ * The texts themselves live in `src/prompt-presets.js`.
+ * @see docs/RATIONALE.md#PROMPT-02
+ */
+export const PROMPT_PRESETS = Object.freeze({
+    SCENE_NOTES: 'scene-notes',
+    DIRECT: 'direct',
+    TERSE: 'terse',
+    CUSTOM: 'custom',
+});
+
 export const TX_STATE = Object.freeze({
     ARMED: 'armed',
     SNAPSHOTTED: 'snapshotted',
@@ -94,6 +106,13 @@ export const DEFAULT_SETTINGS = Object.freeze({
     snapshotTtlDays: 0,
     showButton: true,
     warnExtensions: true,
+    /** Preset id, or PROMPT_PRESETS.CUSTOM to use `promptTemplate`. @see docs/RATIONALE.md#CFG-04 */
+    promptPreset: PROMPT_PRESETS.SCENE_NOTES,
+    /** Empty = the built-in text, never an empty prompt. @see docs/RATIONALE.md#CFG-04 */
+    promptTemplate: '',
+    promptModePreserve: '',
+    promptModeAdaptive: '',
+    promptModeReimagine: '',
     /**
      * Include the always-collected lifecycle event log in `/intercede diagnostics`.
      * Exposure, not collection. @see docs/RATIONALE.md#LEASE-14
