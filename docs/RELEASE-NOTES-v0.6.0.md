@@ -1,22 +1,15 @@
-# Intercede v0.6.0 — draft release notes
+# Intercede v0.6.0 — release notes
 
-**Not published, and nothing is tagged.** Everything below is prepared text.
+**Released, and since superseded by [v0.7.0](RELEASE-NOTES-v0.7.0.md).**
 
 ```text
-Tag:      v0.6.0          (annotated, on the merge commit — not on the branch)
 Title:    Intercede v0.6.0 — respond inside a completed message
 Body:     everything below the rule, from "Respond inside…" onward
 Assets:   none — SillyTavern installs from the repository URL
 ```
 
-Publish only once, in this order:
-
-1. the branch is merged into `main`;
-2. GitHub Actions is **green on the exact commit being tagged** — the merge commit;
-3. the maintainer authorizes the tag.
-
-The live QA gate is closed: results and accepted gaps are recorded in
-[RELEASE-TESTS.md](RELEASE-TESTS.md).
+Results and accepted gaps are recorded in
+[RELEASE-TESTS.md](RELEASE-TESTS.md#v060--release-candidate).
 
 ---
 

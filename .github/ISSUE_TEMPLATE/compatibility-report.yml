@@ -1,0 +1,130 @@
+name: Compatibility report
+description: A backend, browser, or extension result — working or broken. Successes are wanted.
+title: "[Compat] "
+labels: ["compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **"It worked" is a genuinely useful report here**, and the rarest kind. Most of the
+        [compatibility table](https://github.com/TesterBender/Intercede/blob/main/docs/COMPATIBILITY.md)
+        is *untested* — one person, one setup — and a success turns a row from *untested* into
+        *reported working* for a combination the maintainer will never own.
+
+        The three rows worth the most: **non-streaming cancellation**, a **text-completion
+        backend**, and a **small local model**.
+
+  - type: input
+    id: intercede-version
+    attributes:
+      label: Intercede version
+      description: Plus the commit, if you installed from the repository URL and are ahead of the latest tag.
+      placeholder: "0.7.0"
+    validations:
+      required: true
+
+  - type: input
+    id: sillytavern-version
+    attributes:
+      label: SillyTavern version
+      placeholder: "1.18.0"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Browser and operating system
+      placeholder: "Firefox 130, Fedora 42 — or: Chrome on Android 15"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend-type
+    attributes:
+      label: Backend type
+      options:
+        - Chat completion
+        - Text completion
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Provider or local model
+      placeholder: "llama.cpp, Qwen3 8B"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: streaming
+    attributes:
+      label: Streaming
+      options:
+        - "On"
+        - "Off"
+        - Tried both
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: operations
+    attributes:
+      label: What you actually tried
+      description: Only check what you did. An unchecked box is not a failure — it is an untested row, which is the whole point of this form.
+      options:
+        - label: An ordinary intercession, committed
+        - label: Undo
+        - label: Compare
+        - label: Swiping the revised continuation
+        - label: Chaining — interceding a revised continuation
+        - label: Cancelling mid-generation
+        - label: A backend failure or timeout
+        - label: "`/intercede recover` after an interruption"
+        - label: A non-default prompt preset
+        - label: A custom prompt template
+    validations:
+      required: true
+
+  - type: dropdown
+    id: result
+    attributes:
+      label: Overall result
+      options:
+        - Worked
+        - Worked, with caveats described below
+        - Failed
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: What happened
+      description: For a success, a sentence is fine. For anything else, what you saw and how often — "once in about ten" is more useful than "sometimes".
+    validations:
+      required: true
+
+  - type: textarea
+    id: extensions
+    attributes:
+      label: Other extensions installed
+      description: If you are reporting on an extension pairing specifically, name it here. Rolling back cleanly when another extension interferes is a **pass** — that is the designed behaviour.
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Optional for a success, valuable for anything else. Metadata only; redact `chat.id` if it names something private.
+      render: json
+
+  - type: checkboxes
+    id: consent
+    attributes:
+      label: Listing
+      options:
+        - label: You may add this result to docs/COMPATIBILITY.md, linked to this issue.
+    validations:
+      required: true

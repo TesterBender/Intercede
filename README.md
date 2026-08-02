@@ -26,6 +26,25 @@ Requires **SillyTavern 1.18.0+**. Works with streaming disabled or enabled. No s
 plugin, no telemetry, and no Intercede-operated service; generation goes through the
 backend you have already configured in SillyTavern, exactly as an ordinary message does.
 
+Current release: **v0.7.0**. Installing from the repository URL gives you `main`, which may be
+ahead of the latest tag — `/intercede diagnostics` reports the version either way, and a
+commit is worth including in a bug report when it is.
+
+## Documentation
+
+The pages below are the manual. This README stays the overview.
+
+| Page | Purpose |
+| --- | --- |
+| [Documentation home](docs/README.md) | Index of everything below |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | What a message means, and what to do about it |
+| [Known issues](docs/KNOWN-ISSUES.md) | Confirmed, suspected, and resolved problems |
+| [Testing status](docs/TESTING-STATUS.md) | What is actually verified, and by whom |
+| [Compatibility reports](docs/COMPATIBILITY.md) | Backends and hosts people have run this on |
+| [Report a problem](docs/REPORTING-PROBLEMS.md) | What to include, and what to redact first |
+| [Roadmap](docs/ROADMAP.md) | Deferred work, with no delivery promises attached |
+| [Design rationale](docs/RATIONALE.md) | Why every non-obvious line exists |
+
 ## Installation
 
 Extensions → *Install extension* → paste this repository's URL, or clone into:
